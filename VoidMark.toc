@@ -1,0 +1,32 @@
+## Interface: 16001
+## Title: VoidMark |cffb366ff[Forever Beta]|r
+## Version: 0.1.5-beta-forever
+## Notes: VoidMark WPvP intelligence - WoW Forever beta port.
+## Creator: Taliaa
+## Author: Taliaa
+
+## OptionalDeps: Ace3, LibSharedMedia-3.0
+## SavedVariables: VoidMarkDB
+
+#@no-lib-strip@
+Embeds.xml
+#@end-no-lib-strip@
+
+VoidMark.xml
+
+Locales\VoidMark-enUS.lua
+
+VoidMark.lua
+Fonts.lua
+Colors.lua
+Widgets.lua
+WindowOrder.lua
+MainWindow.lua
+List.lua
+VoidMarkStats.xml
+VoidMarkData.lua
+GankRepository.lua
+GankTracker.lua
+ForeverCompat.lua
+VoidMarkUI.lua
+MCMarks.lua
