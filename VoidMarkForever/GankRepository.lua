@@ -1,0 +1,3691 @@
+local VMAPI = VoidMarkForever.API
+-- TaliaaVoidMark Gank Repository
+-- Persistent historical gank storage + two-account Battle.net synchronization.
+-- v8.9 PERFORMANCE: death-frame network/history work deferred until combat ends.
+-- v7.3: live-sync telemetry + merged-event range API for weekly reporting.
+-- History is stored inside VoidMarkDB.TaliaaGankGlobal["Forever"].GankHistory and synced across accounts.
+
+TaliaaGankRepository = TaliaaGankRepository or {}
+local Repo = TaliaaGankRepository
+
+local PREFIX = "TGANK2"
+local SEP = "\031"
+local CLUSTER = "Forever"
+local VOIDMARK_REPO_BUILD = "2026-09-28-v9.5-chunked-account-sync"
+local HISTORY_VERSION = 8
+local DEDUPE_SECONDS = 6
+local SEND_INTERVAL = 0.08
+local AUTO_PAIR_RETRY = 20
+local AUTO_SYNC_RETRY = 8
+local DIRECT_PAIR_MAX_ID = 100
+local DIRECT_PAIR_STEP_DELAY = 0.08
+
+local frame = CreateFrame("Frame")
+local sendQueue = {}
+local sendHead = 1
+local sendTail = 0
+local sendElapsed = 0
+local syncSendNotBefore = 0
+
+-- Fast differential sync state. Manual sync exchanges compact inventories of
+-- known event IDs first, then sends only rows the other account is missing.
+local ID_LIST_SEP = "\030"
+local INVENTORY_CHUNK_BYTES = 150
+local SYNC_BUILD_BATCH = 120
+local incomingInventories = {}
+
+local pairing = false
+local pairNonce = nil
+local pairingSilent = false
+local localSessionToken = nil
+
+-- Expensive legacy/accent recovery is never allowed to run on the combat kill
+-- path. Victims that need a deep identity repair are queued and reconciled
+-- incrementally once combat has ended.
+local deferredHistoricalQueue = {}
+local deferredHistoricalHead = 1
+local deferredHistoricalTail = 0
+local deferredHistoricalKeys = {}
+local deferredHistoricalElapsed = 0
+local deferredHistoricalNotBefore = 0
+local repositoryWasInCombat = false
+
+local function Print(msg)
+    DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[Taliaa Gank Repo]|r " .. tostring(msg))
+end
+
+local function Now()
+    if GetServerTime then
+        local t = GetServerTime()
+        if t and t > 0 then return t end
+    end
+    return time()
+end
+
+-- WoW character names can contain accented Latin letters. Lua 5.1's
+-- string.lower() is byte/ASCII oriented on Classic Era, so two visually identical
+-- names can arrive through different APIs with case/diacritic variants and fail
+-- an ordinary table lookup. Keep an accent-preserving fold for exact aliases and
+-- a conservative ASCII fold for recovery-only matching.
+local UTF8_LOWER = {
+    ["À"]="à", ["Á"]="á", ["Â"]="â", ["Ã"]="ã", ["Ä"]="ä", ["Å"]="å",
+    ["Æ"]="æ", ["Ç"]="ç", ["È"]="è", ["É"]="é", ["Ê"]="ê", ["Ë"]="ë",
+    ["Ì"]="ì", ["Í"]="í", ["Î"]="î", ["Ï"]="ï", ["Ð"]="ð", ["Ñ"]="ñ",
+    ["Ò"]="ò", ["Ó"]="ó", ["Ô"]="ô", ["Õ"]="õ", ["Ö"]="ö", ["Ø"]="ø",
+    ["Ù"]="ù", ["Ú"]="ú", ["Û"]="û", ["Ü"]="ü", ["Ý"]="ý", ["Þ"]="þ",
+    ["Œ"]="œ", ["Š"]="š", ["Ž"]="ž", ["Ÿ"]="ÿ",
+}
+
+local UTF8_ASCII = {
+    ["à"]="a", ["á"]="a", ["â"]="a", ["ã"]="a", ["ä"]="a", ["å"]="a",
+    ["æ"]="ae", ["ç"]="c", ["è"]="e", ["é"]="e", ["ê"]="e", ["ë"]="e",
+    ["ì"]="i", ["í"]="i", ["î"]="i", ["ï"]="i", ["ð"]="d", ["ñ"]="n",
+    ["ò"]="o", ["ó"]="o", ["ô"]="o", ["õ"]="o", ["ö"]="o", ["ø"]="o",
+    ["ù"]="u", ["ú"]="u", ["û"]="u", ["ü"]="u", ["ý"]="y", ["ÿ"]="y",
+    ["þ"]="th", ["ß"]="ss", ["œ"]="oe", ["š"]="s", ["ž"]="z",
+}
+
+-- Cache name normalization. Statistics can touch the same names many times
+-- while building thousands of historical rows; repeatedly running 20+ UTF-8
+-- gsubs per call is expensive enough to trip Classic's script watchdog.
+local utf8CaseFoldCache = {}
+local exactPlayerNameKeyCache = {}
+local canonicalPlayerNameKeyCache = {}
+
+local function UTF8CaseFold(value)
+    local raw = tostring(value or "")
+    local cached = utf8CaseFoldCache[raw]
+    if cached ~= nil then return cached end
+    local s = raw
+    for upper, lower in pairs(UTF8_LOWER) do
+        if s:find(upper, 1, true) then s = s:gsub(upper, lower) end
+    end
+    s = string.lower(s)
+    utf8CaseFoldCache[raw] = s
+    return s
+end
+
+local function BasePlayerNameText(name)
+    local s = tostring(name or "")
+    return s
+end
+
+local function ExactPlayerNameKey(name)
+    local raw = tostring(name or "")
+    local cached = exactPlayerNameKeyCache[raw]
+    if cached ~= nil then return cached end
+    cached = UTF8CaseFold(raw)
+    exactPlayerNameKeyCache[raw] = cached
+    return cached
+end
+
+local function CanonicalPlayerNameKey(name)
+    local raw = tostring(name or "")
+    local cached = canonicalPlayerNameKeyCache[raw]
+    if cached ~= nil then return cached end
+    local s = UTF8CaseFold(BasePlayerNameText(raw))
+    for accented, ascii in pairs(UTF8_ASCII) do
+        if s:find(accented, 1, true) then s = s:gsub(accented, ascii) end
+    end
+    canonicalPlayerNameKeyCache[raw] = s
+    return s
+end
+
+local function NormalizePlayerName(name)
+    return CanonicalPlayerNameKey(name)
+end
+
+local function CleanField(value)
+    local s = tostring(value or "")
+    s = s:gsub(SEP, " ")
+    s = s:gsub("|", "/")
+    s = s:gsub("[%c]", " ")
+    return s
+end
+
+local function SplitPayload(payload)
+    local out = {}
+    local start = 1
+    payload = tostring(payload or "")
+    while true do
+        local p = payload:find(SEP, start, true)
+        if not p then
+            out[#out + 1] = payload:sub(start)
+            break
+        end
+        out[#out + 1] = payload:sub(start, p - 1)
+        start = p + 1
+    end
+    return out
+end
+
+-- Classic Era has used more than one BN_CHAT_MSG_ADDON argument layout.
+-- Do not assume sender gameAccountID is always argument #4; find the first
+-- numeric value after prefix/payload, matching the relay code that is known
+-- to work on this client branch.
+local function ExtractBNetSenderID(...)
+    local args = {...}
+
+    for i = 3, #args do
+        if type(args[i]) == "number" then
+            return args[i]
+        end
+    end
+
+    for i = 3, #args do
+        local v = args[i]
+        if type(v) == "string" and v:match("^%d+$") then
+            return tonumber(v)
+        end
+    end
+
+    return nil
+end
+
+local function IsPlayerGUID(guid)
+    guid = tostring(guid or "")
+    return guid:sub(1, 6) == "Player"
+end
+
+local function IsExplicitNonPlayerGUID(guid)
+    guid = tostring(guid or "")
+    return guid ~= "" and not IsPlayerGUID(guid)
+end
+
+
+local function InCombatNow()
+    return InCombatLockdown and InCombatLockdown() and true or false
+end
+
+local function CurrentFaction()
+    if VoidMark and VoidMark.FactionName and VoidMark.FactionName ~= "" then
+        return VoidMark.FactionName
+    end
+    return VMAPI.UnitFactionGroup("player") or "Unknown"
+end
+
+local function HashString(s)
+    local h = 5381
+    s = tostring(s or "")
+    for i = 1, #s do
+        h = (h * 33 + string.byte(s, i)) % 2147483647
+    end
+    return h
+end
+
+local function EnsureLocalSessionToken()
+    if localSessionToken and localSessionToken ~= "" then
+        return localSessionToken
+    end
+
+    local seed = table.concat({
+        tostring(VMAPI.UnitGUID("player") or ""),
+        tostring(VMAPI.UnitName("player") or ""),
+        tostring(Now()),
+        tostring(GetTime and GetTime() or 0),
+        tostring(math.random(100000, 999999)),
+    }, ":")
+
+    localSessionToken = "s" .. string.format("%x", HashString(seed))
+    return localSessionToken
+end
+
+local function EnsureSyncDB()
+    if not VoidMarkDB then return nil end
+    VoidMarkDB.TaliaaGankSync = VoidMarkDB.TaliaaGankSync or {}
+    local db = VoidMarkDB.TaliaaGankSync
+    db.version = 3
+    if db.enabled == nil then db.enabled = true end
+    if db.autoPair == nil then db.autoPair = true end
+    if db.autoSync == nil then db.autoSync = true end
+    db.nextSeq = tonumber(db.nextSeq) or 0
+    db.nextDHKSeq = tonumber(db.nextDHKSeq) or 0
+
+    -- Event IDs must be unique even if SavedVariables were copied between WoW
+    -- accounts.  Older builds stored one random nodeID in VoidMarkDB; cloning that DB
+    -- could make Rogue and Priest generate colliding event IDs.  Tie the node to
+    -- the current character GUID instead.  Switching characters intentionally
+    -- changes the node while preserving the shared repository.
+    local ownerGUID = tostring(VMAPI.UnitGUID("player") or "")
+    if ownerGUID ~= "" and (db.nodeOwnerGUID ~= ownerGUID or not db.nodeID or db.nodeID == "") then
+        local seed = ownerGUID .. ":" .. tostring(VMAPI.UnitName("player") or "") .. ":" .. tostring(GetRealmName and GetRealmName() or "")
+        db.nodeID = "c" .. string.format("%x", HashString(seed))
+        db.nodeOwnerGUID = ownerGUID
+    elseif not db.nodeID or db.nodeID == "" then
+        local seed = tostring(VMAPI.UnitName("player") or "") .. ":" .. tostring(Now())
+        db.nodeID = "c" .. string.format("%x", HashString(seed))
+    end
+
+    return db
+end
+
+local function EnsureHistory()
+    if not VoidMarkDB then return nil end
+
+    -- Gank history is deliberately account-wide and faction-neutral.  VoidMark's
+    -- player/KOS database can stay faction-separated, but the user wants one
+    -- combined kill ledger across Priest/Rogue and both WoW accounts.
+    VoidMarkDB.TaliaaGankGlobal = VoidMarkDB.TaliaaGankGlobal or {}
+    VoidMarkDB.TaliaaGankGlobal[CLUSTER] = VoidMarkDB.TaliaaGankGlobal[CLUSTER] or {}
+
+    local shared = VoidMarkDB.TaliaaGankGlobal[CLUSTER]
+    shared.GankHistory = shared.GankHistory or {}
+    local history = shared.GankHistory
+    history.version = HISTORY_VERSION
+    history.events = history.events or {}
+    history.victims = history.victims or {}
+    history.seenIDs = history.seenIDs or {}
+    history.eventCount = tonumber(history.eventCount) or 0
+    -- Per-victim legacy metadata preserves kills that predate the timestamped
+    -- repository. v8 stores the missing historical amount as legacyGap so it can
+    -- be synchronized safely between WoW accounts regardless of how many event
+    -- rows each account had when the old total was discovered. Older floor/
+    -- repoAtCapture entries are migrated lazily.
+    history.legacyFloors = history.legacyFloors or {}
+
+    return history
+end
+
+local function EnsureDHKHistory()
+    if not VoidMarkDB then return nil end
+
+    -- Same storage scope as GankHistory: shared by all characters on this WoW
+    -- account and synchronized to the paired second WoW account.
+    VoidMarkDB.TaliaaGankGlobal = VoidMarkDB.TaliaaGankGlobal or {}
+    VoidMarkDB.TaliaaGankGlobal[CLUSTER] = VoidMarkDB.TaliaaGankGlobal[CLUSTER] or {}
+
+    local shared = VoidMarkDB.TaliaaGankGlobal[CLUSTER]
+    shared.DHKHistory = shared.DHKHistory or {}
+    local history = shared.DHKHistory
+    history.version = 1
+    history.events = history.events or {}
+    history.seenIDs = history.seenIDs or {}
+    history.eventCount = tonumber(history.eventCount) or 0
+    return history
+end
+
+local function NormalizeDHKMessage(message)
+    local s = tostring(message or ""):lower()
+    s = s:gsub("^%s+", ""):gsub("%s+$", "")
+    s = s:gsub("%s+", " ")
+    return s
+end
+
+local function NormalizeDHKCharacter(character)
+    return string.lower(tostring(character or ""))
+end
+
+local function IsSameDHK(history, event)
+    local eventTime = tonumber(event and event.t) or 0
+    local eventMessage = NormalizeDHKMessage(event and event.message)
+    local eventCharacter = NormalizeDHKCharacter(event and event.character)
+
+    if eventTime <= 0 or eventMessage == "" then return false end
+
+    -- IMPORTANT: a civilian kill can award a DHK to more than one of the user's
+    -- logged-in characters at the same instant. Those are TWO account-wide DHKs,
+    -- not duplicate network packets. Only collapse the same message/time when it
+    -- belongs to the SAME character.
+    for _, old in pairs(history.events or {}) do
+        if type(old) == "table" then
+            local oldTime = tonumber(old.t) or 0
+            local oldCharacter = NormalizeDHKCharacter(old.character)
+
+            if oldCharacter == eventCharacter
+                and math.abs(oldTime - eventTime) <= 1
+                and NormalizeDHKMessage(old.message) == eventMessage then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function AddDHKEvent(event, suppressNotify)
+    local history = EnsureDHKHistory()
+    if not history or type(event) ~= "table" or not event.id then
+        return false, 0, "no database"
+    end
+
+    local eventID = tostring(event.id)
+    if history.events[eventID] or history.seenIDs[eventID] then
+        return false, tonumber(history.eventCount) or 0, "known id"
+    end
+
+    if IsSameDHK(history, event) then
+        history.seenIDs[eventID] = true
+        return false, tonumber(history.eventCount) or 0, "same dhk"
+    end
+
+    event.id = eventID
+    event.t = tonumber(event.t) or Now()
+    event.message = tostring(event.message or "")
+    event.character = tostring(event.character or "")
+    event.zone = tostring(event.zone or "")
+    event.faction = tostring(event.faction or CurrentFaction())
+    event.source = tostring(event.source or "")
+
+    history.events[eventID] = event
+    history.seenIDs[eventID] = true
+    history.eventCount = (tonumber(history.eventCount) or 0) + 1
+
+    if not suppressNotify and TaliaaGankTracker and TaliaaGankTracker.OnDHKHistoryUpdated then
+        TaliaaGankTracker:OnDHKHistoryUpdated()
+    end
+
+    return true, history.eventCount
+end
+
+local function ImportLegacyDHKHistory()
+    if not VoidMarkDB or type(VoidMarkDB.TaliaaGankDHKHistory) ~= "table" then
+        return 0
+    end
+
+    local legacy = VoidMarkDB.TaliaaGankDHKHistory
+    if type(legacy.events) ~= "table" then return 0 end
+
+    local imported = 0
+    for legacyID, event in pairs(legacy.events) do
+        if type(event) == "table" then
+            local raw = table.concat({
+                tostring(event.t or 0),
+                tostring(event.character or ""),
+                tostring(event.message or ""),
+                tostring(legacyID or ""),
+            }, "|")
+
+            local copy = {
+                id = "LDHK-" .. string.format("%x", HashString(raw)) .. "-" .. tostring(tonumber(event.t) or 0),
+                t = tonumber(event.t) or 0,
+                character = tostring(event.character or ""),
+                message = tostring(event.message or ""),
+                zone = tostring(event.zone or ""),
+                faction = tostring(event.faction or ""),
+            }
+
+            local added = AddDHKEvent(copy, true)
+            if added then imported = imported + 1 end
+        end
+    end
+
+    return imported
+end
+
+local function RepairDHKHistory()
+    local history = EnsureDHKHistory()
+    if not history then return 0 end
+
+    local seen = {}
+    local count = 0
+    for id, event in pairs(history.events or {}) do
+        if type(event) == "table" then
+            local eventID = tostring(event.id or id)
+            event.id = eventID
+            seen[eventID] = true
+            count = count + 1
+        end
+    end
+
+    history.seenIDs = seen
+    history.eventCount = count
+    return count
+end
+
+local function IsBrokenSyntheticDHK(event)
+    if type(event) ~= "table" then return false end
+    local source = string.lower(tostring(event.source or ""))
+    local message = string.lower(tostring(event.message or ""))
+
+    if source == "api" then return true end
+    if source == "blizzard-session-api" then return false end
+
+    -- Previous experimental builds used these messages without a reliable source.
+    if message:match("^blizzard dhk #%d+$") then return true end
+    if message:match("^blizzard today dhk #%d+$") then
+        return source ~= "blizzard-session-api"
+    end
+
+    return false
+end
+
+local function NormalizeCharacterKey(character)
+    return string.lower(tostring(character or ""))
+end
+
+local function RemoveBrokenSyntheticDHKsForCharacterInRange(character, startTime, endTime, authoritativeCount)
+    local history = EnsureDHKHistory()
+    if not history then return 0 end
+
+    local want = NormalizeCharacterKey(character)
+    local first = tonumber(startTime) or 0
+    local last = tonumber(endTime) or (Now() + 60)
+    local expected = tonumber(authoritativeCount) or 0
+
+    local current = 0
+    local broken = {}
+    for id, event in pairs(history.events or {}) do
+        if type(event) == "table"
+            and NormalizeCharacterKey(event.character) == want then
+            local t = tonumber(event.t) or 0
+            if t >= first and t <= last then
+                current = current + 1
+                if IsBrokenSyntheticDHK(event) then
+                    broken[#broken + 1] = { id = id, t = t }
+                end
+            end
+        end
+    end
+
+    local excess = math.max(0, current - expected)
+    if excess <= 0 or #broken == 0 then return 0 end
+
+    table.sort(broken, function(a, b) return a.t > b.t end)
+    local removed = 0
+
+    for i = 1, math.min(excess, #broken) do
+        history.events[broken[i].id] = nil
+        removed = removed + 1
+    end
+
+    if removed > 0 then RepairDHKHistory() end
+    return removed
+end
+
+local function PurgeExplicitNonPlayerHistory()
+    local history = EnsureHistory()
+    if not history then return 0, 0 end
+
+    local removedEvents = 0
+    local removedVictims = 0
+
+    -- Remove timestamped kills that are explicitly pets/NPCs/etc. Empty GUIDs are
+    -- retained because some old legitimate player history was recovered without GUIDs.
+    for id, event in pairs(history.events or {}) do
+        if type(event) == "table" and IsExplicitNonPlayerGUID(event.guid) then
+            history.events[id] = nil
+            removedEvents = removedEvents + 1
+        end
+    end
+
+    for key, victim in pairs(history.victims or {}) do
+        if type(victim) == "table" and IsExplicitNonPlayerGUID(victim.guid) then
+            history.victims[key] = nil
+            removedVictims = removedVictims + 1
+        end
+    end
+
+    return removedEvents, removedVictims
+end
+
+local function RecoveryEventSignature(event)
+    if type(event) ~= "table" then return "" end
+    return table.concat({
+        tostring(event.t or 0),
+        tostring(event.name or ""),
+        tostring(event.guid or ""),
+        tostring(event.zone or ""),
+        tostring(event.subZone or ""),
+        tostring(event.level or ""),
+        tostring(event.class or ""),
+        tostring(event.killer or ""),
+        tostring(event.faction or ""),
+    }, "|")
+end
+
+local function RecoveryCollisionID(eventID, event)
+    local raw = tostring(eventID or "") .. "|" .. RecoveryEventSignature(event)
+    return "R" .. string.format("%x", HashString(raw)) .. "-" .. tostring(tonumber(event and event.t) or 0)
+end
+
+local function ImportRecoveryLedger()
+    if not VoidMarkDB or type(VoidMarkDB.TaliaaGankRecoveryLedger) ~= "table" then
+        return 0, 0, 0
+    end
+
+    local ledger = VoidMarkDB.TaliaaGankRecoveryLedger
+    local history = EnsureHistory()
+    if not history or type(ledger.events) ~= "table" then
+        return 0, tonumber(ledger.count) or 0, tonumber(ledger.unresolved) or 0
+    end
+
+    local imported = 0
+    for id, event in pairs(ledger.events) do
+        if type(event) == "table" then
+            local eventID = tostring(event.id or id or "")
+            if eventID ~= "" then
+                local existing = history.events[eventID]
+
+                -- If the ID is unused, import normally.
+                if existing == nil then
+                    local copy = {}
+                    for k, v in pairs(event) do copy[k] = v end
+                    copy.id = eventID
+                    history.events[eventID] = copy
+                    imported = imported + 1
+
+                -- If the same ID already represents the same kill, it is already
+                -- present and should not be duplicated.
+                elseif RecoveryEventSignature(existing) == RecoveryEventSignature(event) then
+                    -- already represented
+
+                -- If the same ID represents a DIFFERENT kill, preserve both by
+                -- assigning the recovery row a stable collision-safe ID.
+                else
+                    local newID = RecoveryCollisionID(eventID, event)
+                    local n = 1
+                    while history.events[newID] ~= nil
+                        and RecoveryEventSignature(history.events[newID]) ~= RecoveryEventSignature(event) do
+                        n = n + 1
+                        newID = RecoveryCollisionID(eventID .. "-" .. tostring(n), event)
+                    end
+
+                    if history.events[newID] == nil then
+                        local copy = {}
+                        for k, v in pairs(event) do copy[k] = v end
+                        copy.id = newID
+                        copy.recoveryOriginalID = eventID
+                        history.events[newID] = copy
+                        imported = imported + 1
+                    end
+                end
+            end
+        end
+    end
+
+    ledger.lastImportedAt = Now()
+    ledger.lastImportedCount = imported
+    return imported, tonumber(ledger.count) or 0, tonumber(ledger.unresolved) or 0
+end
+
+function Repo:GetRecoveryLedgerStats()
+    local ledger = VoidMarkDB and VoidMarkDB.TaliaaGankRecoveryLedger
+    if type(ledger) ~= "table" then return 0, 0, 0 end
+    return tonumber(ledger.count) or 0,
+           tonumber(ledger.unresolved) or 0,
+           tonumber(ledger.generatedAt) or 0
+end
+
+local function LegacyFactionHistories()
+    local out = {}
+    if not VoidMarkDB or not VoidMarkDB.TaliaaShared then return out end
+    local cluster = VoidMarkDB.TaliaaShared[CLUSTER]
+    if type(cluster) ~= "table" then return out end
+
+    for faction, shared in pairs(cluster) do
+        if type(shared) == "table" and type(shared.GankHistory) == "table" then
+            out[#out + 1] = { faction = tostring(faction), history = shared.GankHistory }
+        end
+    end
+    return out
+end
+
+-- Build a stable import ID from the actual kill data instead of trusting the
+-- old repository event ID.  This matters when two WoW accounts were created
+-- from the same SavedVariables file and therefore reused the same old nodeID.
+local function LegacyImportID(event, fallbackID, faction)
+    local raw = table.concat({
+        tostring(event and event.t or 0),
+        tostring(event and event.name or "?"),
+        tostring(event and event.guid or ""),
+        tostring(event and event.killer or ""),
+        tostring(event and event.zone or ""),
+        tostring(event and event.subZone or ""),
+        tostring(faction or ""),
+        tostring(fallbackID or ""),
+    }, "|")
+    return "L" .. string.format("%x", HashString(raw)) .. "-" .. tostring(tonumber(event and event.t) or 0)
+end
+
+-- Copy old faction-scoped repository rows into the new global ledger.  Imported
+-- IDs are canonicalized so colliding legacy IDs from different accounts do not
+-- silently erase one character's kills. RepairLegacyHistory() then removes true
+-- same-death duplicates by victim + timestamp.
+local function ImportLegacyFactionEvents()
+    local dst = EnsureHistory()
+    if not dst then return 0 end
+    local imported = 0
+
+    for _, source in ipairs(LegacyFactionHistories()) do
+        local src = source.history
+        if src ~= dst then
+            for id, event in pairs(src.events or {}) do
+                if type(event) == "table" then
+                    local oldID = tostring(event.id or id or "")
+                    local eventID = LegacyImportID(event, oldID, source.faction)
+                    if dst.events[eventID] == nil then
+                        local copy = {}
+                        for k, v in pairs(event) do copy[k] = v end
+                        copy.id = eventID
+                        copy.legacyID = oldID
+                        if not copy.faction or copy.faction == "" then copy.faction = source.faction end
+                        dst.events[eventID] = copy
+                        imported = imported + 1
+                    end
+                end
+            end
+
+            -- Some early builds retained timestamps only under victim.events.
+            for _, victim in pairs(src.victims or {}) do
+                if type(victim) == "table" and type(victim.events) == "table" then
+                    for eventID, stamp in pairs(victim.events) do
+                        local oldID = tostring(eventID or "")
+                        local synthetic = {
+                            t = tonumber(stamp) or tonumber(victim.lastKill) or 0,
+                            name = tostring(victim.name or "?"),
+                            guid = tostring(victim.guid or ""),
+                            zone = tostring(victim.lastZone or "Unknown"),
+                            subZone = tostring(victim.lastSubZone or ""),
+                            level = victim.lastLevel or "?",
+                            class = victim.lastClass or "",
+                            killer = tostring(victim.lastKiller or ""),
+                            faction = source.faction,
+                        }
+                        local canonicalID = LegacyImportID(synthetic, oldID, source.faction)
+                        if dst.events[canonicalID] == nil then
+                            synthetic.id = canonicalID
+                            synthetic.legacyID = oldID
+                            dst.events[canonicalID] = synthetic
+                            imported = imported + 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return imported
+end
+
+local QueueLegacyFloorToPeer
+
+local function VictimKey(name, guid)
+    guid = tostring(guid or "")
+    if guid:sub(1, 6) == "Player" then
+        return "G:" .. guid
+    end
+    return "N:" .. ExactPlayerNameKey(tostring(name or "?"))
+end
+
+-- Sightings often have a name but no GUID in PlayerData. The permanent ledger
+-- already knows that GUID; index its names so the UI can find the same history
+-- as RecordKill without scanning thousands of victims on each row refresh.
+local historicalGUIDIndex
+
+local function HistoricalGUIDIndex(history)
+    local index = historicalGUIDIndex
+    if not index or index.history ~= history or index.victims ~= history.victims
+        or index.floors ~= history.legacyFloors then
+        index = { history = history, victims = history.victims, floors = history.legacyFloors,
+            exact = {}, base = {}, canonical = {}, bare = {}, ready = false }
+        historicalGUIDIndex = index
+    end
+    return index
+end
+
+local function IndexHistoricalGUID(history, row)
+    if type(row) ~= "table" or not IsPlayerGUID(row.guid) then return end
+    local name = tostring(row.name or "")
+    if name == "" or name == "?" then return end
+    local guid = tostring(row.guid)
+    local index = HistoricalGUIDIndex(history)
+    local function bind(bucket, key)
+        if key == "" then return end
+        if bucket[key] == nil then bucket[key] = guid
+        elseif bucket[key] ~= guid then bucket[key] = false end
+    end
+    bind(index.exact, ExactPlayerNameKey(name))
+    bind(index.base, ExactPlayerNameKey(BasePlayerNameText(name)))
+    bind(index.canonical, CanonicalPlayerNameKey(name))
+    if name == BasePlayerNameText(name) then bind(index.bare, ExactPlayerNameKey(name)) end
+end
+
+local function RebuildHistoricalGUIDIndex(history)
+    if not history or InCombatNow() then return false end
+    historicalGUIDIndex = nil
+    local index = HistoricalGUIDIndex(history)
+    for _, victim in pairs(history.victims or {}) do IndexHistoricalGUID(history, victim) end
+    for _, floor in pairs(history.legacyFloors or {}) do IndexHistoricalGUID(history, floor) end
+    index.ready = true
+    return true
+end
+
+local function ResolveHistoricalGUID(history, name, guid)
+    if IsPlayerGUID(guid) then return tostring(guid) end
+    local index = HistoricalGUIDIndex(history)
+    local full = ExactPlayerNameKey(name)
+    local base = ExactPlayerNameKey(BasePlayerNameText(name))
+    local candidate
+    if full ~= base then
+        candidate = index.exact[full]
+        if candidate ~= nil then return candidate or "" end
+        -- A qualified name must not borrow another realm's qualified identity.
+        candidate = index.bare[base]
+        if candidate and index.base[base] == candidate then return candidate end
+        return ""
+    end
+    candidate = index.base[base]
+    if candidate ~= nil then return candidate or "" end
+    -- Accent recovery remains conservative: only one real GUID may own it.
+    return index.canonical[CanonicalPlayerNameKey(name)] or ""
+end
+
+local function FindVictimByName(history, name)
+    if not history or not name then return nil end
+
+    local wantFull = ExactPlayerNameKey(name)
+    local wantBase = ExactPlayerNameKey(BasePlayerNameText(name))
+    local wantCanonical = CanonicalPlayerNameKey(name)
+    local exactBaseVictim, exactBaseKey, exactBaseMatches = nil, nil, 0
+    local canonicalVictim, canonicalKey, canonicalMatches = nil, nil, 0
+
+    for key, victim in pairs(history.victims or {}) do
+        if victim and victim.name then
+            local haveFull = ExactPlayerNameKey(victim.name)
+            if haveFull == wantFull then
+                return victim, key
+            end
+
+            if ExactPlayerNameKey(BasePlayerNameText(victim.name)) == wantBase then
+                exactBaseMatches = exactBaseMatches + 1
+                exactBaseVictim, exactBaseKey = victim, key
+            end
+
+            if wantCanonical ~= "" and CanonicalPlayerNameKey(victim.name) == wantCanonical then
+                canonicalMatches = canonicalMatches + 1
+                canonicalVictim, canonicalKey = victim, key
+            end
+        end
+    end
+
+    if exactBaseMatches == 1 then
+        return exactBaseVictim, exactBaseKey
+    end
+
+    -- Accent-fold recovery is intentionally last and only accepted when unique.
+    -- That fixes names such as Izihørdekids/Izihòrdekids without ever combining
+    -- two different historical players just because their accents fold alike.
+    if canonicalMatches == 1 then
+        return canonicalVictim, canonicalKey
+    end
+end
+
+local function FindVoidMarkPlayerData(name, guid)
+    local playerData = VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData
+    if type(playerData) ~= "table" then return nil, nil, nil end
+
+    local rawName = tostring(name or "")
+    local baseName = BasePlayerNameText(rawName)
+
+    if type(playerData[rawName]) == "table" then
+        return playerData[rawName], rawName, "exact"
+    end
+    if baseName ~= rawName and type(playerData[baseName]) == "table" then
+        return playerData[baseName], baseName, "base"
+    end
+
+    local guidText = tostring(guid or "")
+    local wantFull = ExactPlayerNameKey(rawName)
+    local wantBase = ExactPlayerNameKey(baseName)
+    local wantCanonical = CanonicalPlayerNameKey(rawName)
+    local exactData, exactKey, exactMatches = nil, nil, 0
+    local canonicalData, canonicalKey, canonicalMatches = nil, nil, 0
+
+    for key, data in pairs(playerData) do
+        if type(data) == "table" then
+            if IsPlayerGUID(guidText) and tostring(data.guid or data.GUID or "") == guidText then
+                return data, key, "guid"
+            end
+
+            local keyFull = ExactPlayerNameKey(key)
+            local keyBase = ExactPlayerNameKey(BasePlayerNameText(key))
+            if keyFull == wantFull or keyBase == wantBase then
+                exactMatches = exactMatches + 1
+                exactData, exactKey = data, key
+            elseif wantCanonical ~= "" and CanonicalPlayerNameKey(key) == wantCanonical then
+                canonicalMatches = canonicalMatches + 1
+                canonicalData, canonicalKey = data, key
+            end
+        end
+    end
+
+    if exactMatches == 1 then
+        return exactData, exactKey, "folded"
+    end
+    if canonicalMatches == 1 then
+        return canonicalData, canonicalKey, "accent"
+    end
+    return nil, nil, canonicalMatches > 1 and "ambiguous" or "none"
+end
+
+-- Return the repository event count for one victim without losing older
+-- name-only rows. GUID rows are authoritative; one unique legacy name alias may
+-- also be included because older imports sometimes lacked a GUID.
+local function IndexedVictimEventCount(history, name, guid)
+    if not history then return 0 end
+
+    local count = 0
+    local counted = {}
+    local guidText = tostring(guid or "")
+
+    if IsPlayerGUID(guidText) then
+        local victim = history.victims and history.victims[VictimKey(name, guidText)]
+        if type(victim) == "table" then
+            count = count + (tonumber(victim.kills) or 0)
+            counted[victim] = true
+        end
+
+        local byName = FindVictimByName(history, name)
+        if type(byName) == "table" and not counted[byName]
+            and not IsPlayerGUID(byName.guid) then
+            count = count + (tonumber(byName.kills) or 0)
+            counted[byName] = true
+        end
+    else
+        local victim = history.victims and history.victims[VictimKey(name, "")]
+        if type(victim) == "table" then
+            count = count + (tonumber(victim.kills) or 0)
+            counted[victim] = true
+        end
+
+        local byName = FindVictimByName(history, name)
+        if type(byName) == "table" and not counted[byName] then
+            count = count + (tonumber(byName.kills) or 0)
+        end
+    end
+
+    return count
+end
+
+-- Recover a pre-rename lifetime counter without requiring the old TaliaaVoidMark
+-- key spelling to exactly match the current VoidMark spelling.  The offline
+-- merger deliberately preserves the original PlayerData keys, which can differ
+-- by realm suffix, case, or an accented character.  Only accept a folded alias
+-- when it is unique so two genuinely different players are never combined.
+local legacyVoidMarkLookupSource = nil
+local legacyVoidMarkLookup = nil
+
+-- Build the expensive accent/realm alias index once per loaded legacy table.
+-- Statistics can resolve hundreds/thousands of rows in one click; scanning all
+-- 3k+ recovered records once per row causes Classic's "script ran too long".
+local function EnsureLegacyVoidMarkLookup(allowBuild)
+    local legacy = VoidMarkDB and VoidMarkDB.VoidMarkLegacyPlayers
+    if type(legacy) ~= "table" then
+        legacyVoidMarkLookupSource = nil
+        legacyVoidMarkLookup = nil
+        return nil, nil
+    end
+    if legacyVoidMarkLookupSource == legacy and legacyVoidMarkLookup then
+        return legacy, legacyVoidMarkLookup
+    end
+    if allowBuild == false or InCombatNow() then return legacy, nil end
+
+    local lookup = { exact = {}, canonical = {} }
+    local function add(bucket, key, legacyKey, wins)
+        if key == "" then return end
+        local item = bucket[key]
+        if not item then
+            bucket[key] = { count = 1, key = legacyKey, wins = wins }
+        elseif item.key ~= legacyKey then
+            item.count = item.count + 1
+            if wins > item.wins then item.wins = wins end
+        end
+    end
+
+    for key, candidate in pairs(legacy) do
+        if type(candidate) == "table" then
+            local wins = tonumber(candidate.wins) or 0
+            local full = ExactPlayerNameKey(key)
+            local base = ExactPlayerNameKey(BasePlayerNameText(key))
+            add(lookup.exact, full, key, wins)
+            if base ~= full then add(lookup.exact, base, key, wins) end
+            add(lookup.canonical, CanonicalPlayerNameKey(key), key, wins)
+        end
+    end
+
+    legacyVoidMarkLookupSource = legacy
+    legacyVoidMarkLookup = lookup
+    return legacy, lookup
+end
+
+local function LegacyVoidMarkLifetimeWins(name, allowBuild)
+    local legacy, lookup = EnsureLegacyVoidMarkLookup(allowBuild)
+    if not legacy then return 0, nil, "none" end
+
+    local raw = tostring(name or "")
+    local base = BasePlayerNameText(raw)
+
+    local row = legacy[raw] or legacy[base]
+    if type(row) == "table" then
+        return tonumber(row.wins) or 0, raw, "direct"
+    end
+    if not lookup then return 0, nil, "none" end
+
+    local full = lookup.exact[ExactPlayerNameKey(raw)]
+    local baseMatch = lookup.exact[ExactPlayerNameKey(base)]
+    local exact = full or baseMatch
+    if exact and exact.count == 1 then
+        return tonumber(exact.wins) or 0, exact.key, "legacy-exact"
+    end
+
+    local canonical = lookup.canonical[CanonicalPlayerNameKey(raw)]
+    if (not exact or exact.count == 0) and canonical and canonical.count == 1 then
+        return tonumber(canonical.wins) or 0, canonical.key, "legacy-accent"
+    end
+    return 0, nil, (exact and exact.count > 1) or (canonical and canonical.count > 1)
+        and "ambiguous" or "none"
+end
+
+local function VoidMarkLifetimeWins(name, guid)
+    local data, matchedKey, method = FindVoidMarkPlayerData(name, guid)
+    local wins = type(data) == "table" and (tonumber(data.wins) or 0) or 0
+    local legacyWins, legacyKey, legacyMethod = LegacyVoidMarkLifetimeWins(name)
+    if legacyWins > wins then
+        wins = legacyWins
+        matchedKey = legacyKey or matchedKey
+        method = legacyMethod or method
+    end
+    return wins, matchedKey, method
+end
+
+-- Read-only VoidMark identity index for the combat hot path. Built outside combat and
+-- stores references to VoidMark player tables, so a player's .wins value stays fresh
+-- without rebuilding the index after every kill.
+local spyFastIndex = { exact = {}, canonical = {}, guid = {}, ready = false }
+
+local function RebuildVoidMarkFastIndex()
+    if InCombatNow() then return false end
+    local playerData = VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData
+    if type(playerData) ~= "table" then return false end
+
+    local exact, canonical, byGUID = {}, {}, {}
+    for key, data in pairs(playerData) do
+        if type(data) == "table" then
+            local exactKey = ExactPlayerNameKey(key)
+            if exactKey ~= "" then
+                if exact[exactKey] == nil then exact[exactKey] = data
+                elseif exact[exactKey] ~= data then exact[exactKey] = false end
+            end
+
+            local canonicalKey = CanonicalPlayerNameKey(key)
+            if canonicalKey ~= "" then
+                if canonical[canonicalKey] == nil then canonical[canonicalKey] = data
+                elseif canonical[canonicalKey] ~= data then canonical[canonicalKey] = false end
+            end
+
+            local g = tostring(data.guid or data.GUID or "")
+            if IsPlayerGUID(g) then byGUID[g] = data end
+        end
+    end
+
+    spyFastIndex.exact = exact
+    spyFastIndex.canonical = canonical
+    spyFastIndex.guid = byGUID
+    spyFastIndex.ready = true
+    return true
+end
+
+local function FastVoidMarkLifetimeWins(name, guid)
+    local playerData = VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData
+    local rawName = tostring(name or "")
+    local baseName = BasePlayerNameText(rawName)
+
+    -- Newly seen players can appear after the index build; direct keys remain O(1).
+    if type(playerData) == "table" then
+        local data = playerData[rawName]
+        if type(data) ~= "table" and baseName ~= rawName then data = playerData[baseName] end
+        if type(data) == "table" then return tonumber(data.wins) or 0 end
+    end
+
+    if spyFastIndex.ready then
+        local g = tostring(guid or "")
+        local data = IsPlayerGUID(g) and spyFastIndex.guid[g] or nil
+        if type(data) ~= "table" then
+            data = spyFastIndex.exact[ExactPlayerNameKey(rawName)]
+        end
+        if type(data) ~= "table" then
+            local canonical = spyFastIndex.canonical[CanonicalPlayerNameKey(rawName)]
+            if canonical and canonical ~= false then data = canonical end
+        end
+        if type(data) == "table" then return tonumber(data.wins) or 0 end
+    end
+
+    return 0
+end
+
+local function LegacyUnresolvedExtra(history, name, guid)
+    if not history or type(history.legacyUnresolved) ~= "table" then return 0 end
+
+    local best = 0
+    local rawName = tostring(name or "")
+    local baseName = BasePlayerNameText(rawName)
+    local guidText = tostring(guid or "")
+
+    local function Consider(key)
+        if key and key ~= "" then
+            best = math.max(best, tonumber(history.legacyUnresolved[key]) or 0)
+        end
+    end
+
+    Consider(guidText)
+    Consider(rawName)
+    Consider(baseName)
+
+    local wantExact = ExactPlayerNameKey(rawName)
+    local wantBase = ExactPlayerNameKey(baseName)
+    local wantCanonical = CanonicalPlayerNameKey(rawName)
+    local canonicalValue, canonicalMatches = 0, 0
+
+    for key, value in pairs(history.legacyUnresolved) do
+        if not IsPlayerGUID(key) then
+            local exact = ExactPlayerNameKey(key)
+            local exactBase = ExactPlayerNameKey(BasePlayerNameText(key))
+            if exact == wantExact or exactBase == wantBase then
+                best = math.max(best, tonumber(value) or 0)
+            elseif wantCanonical ~= "" and CanonicalPlayerNameKey(key) == wantCanonical then
+                canonicalMatches = canonicalMatches + 1
+                canonicalValue = math.max(canonicalValue, tonumber(value) or 0)
+            end
+        end
+    end
+
+    if canonicalMatches == 1 then
+        best = math.max(best, canonicalValue)
+    end
+    return best
+end
+
+local function LegacyGapFromEntry(entry)
+    if type(entry) ~= "table" then return 0 end
+    local gap = tonumber(entry.legacyGap)
+    if gap then return math.max(0, gap) end
+
+    -- v7 stored an absolute floor plus the repository size at capture. Convert
+    -- that into the portable missing-kill amount used by v8.
+    local floor = tonumber(entry.floor) or 0
+    local repoAtCapture = tonumber(entry.repoAtCapture) or 0
+    gap = math.max(0, floor - repoAtCapture)
+    entry.legacyGap = gap
+    entry.version = 2
+    return gap
+end
+
+-- Combat-safe historical lookup. This deliberately uses ONLY direct table
+-- lookups: no pairs() walks over PlayerData, victims, unresolved history or
+-- legacy floors. Deep accent/alias recovery is queued for after combat.
+local function FastHistoricalCount(history, name, guid)
+    if not history then return 0, 0, 0, 0, nil end
+
+    local rawName = tostring(name or "")
+    local baseName = BasePlayerNameText(rawName)
+    local guidText = ResolveHistoricalGUID(history, rawName, guid)
+    local eventCount = 0
+    local counted = {}
+
+    local victim = history.victims and history.victims[VictimKey(rawName, guidText)]
+    if type(victim) == "table" then
+        eventCount = eventCount + (tonumber(victim.kills) or 0)
+        counted[victim] = true
+    end
+
+    -- Old imports can have a name-only victim row even after a GUID becomes
+    -- available. Exact accent-preserving lookup is still O(1).
+    local nameVictim = history.victims and history.victims["N:" .. ExactPlayerNameKey(rawName)]
+    if type(nameVictim) == "table" and not counted[nameVictim] then
+        eventCount = eventCount + (tonumber(nameVictim.kills) or 0)
+        counted[nameVictim] = true
+    end
+    if baseName ~= rawName then
+        local baseVictim = history.victims and history.victims["N:" .. ExactPlayerNameKey(baseName)]
+        if type(baseVictim) == "table" and not counted[baseVictim] then
+            eventCount = eventCount + (tonumber(baseVictim.kills) or 0)
+            counted[baseVictim] = true
+        end
+    end
+
+    local legacyWins = LegacyVoidMarkLifetimeWins(rawName, false)
+    local spyWins = math.max(FastVoidMarkLifetimeWins(rawName, guidText), legacyWins)
+
+    local unresolved = 0
+    local old = history.legacyUnresolved
+    if type(old) == "table" then
+        if guidText ~= "" then unresolved = math.max(unresolved, tonumber(old[guidText]) or 0) end
+        if rawName ~= "" then unresolved = math.max(unresolved, tonumber(old[rawName]) or 0) end
+        if baseName ~= "" then unresolved = math.max(unresolved, tonumber(old[baseName]) or 0) end
+    end
+
+    history.legacyFloors = history.legacyFloors or {}
+    local floorKey = VictimKey(rawName, guidText)
+    local entryKey = floorKey
+    local entry = history.legacyFloors[floorKey]
+    if type(entry) ~= "table" then
+        entryKey = "N:" .. ExactPlayerNameKey(rawName)
+        entry = history.legacyFloors[entryKey]
+    end
+    if type(entry) ~= "table" and baseName ~= rawName then
+        entryKey = "N:" .. ExactPlayerNameKey(baseName)
+        entry = history.legacyFloors[entryKey]
+    end
+
+    local knownGap = LegacyGapFromEntry(entry)
+
+    -- v8.9: this function is now strictly read-only on the combat hot path.
+    -- Do not migrate keys, mutate legacy floors or queue BNet metadata here.
+    -- The deep deferred recovery pass persists any newly observed VoidMark/legacy gap
+    -- once combat is over. The max() below still returns the correct visible
+    -- historical total immediately, even before that floor is persisted.
+    local total = math.max(eventCount + knownGap, eventCount, spyWins, eventCount + unresolved)
+    return total, eventCount, spyWins, unresolved, entry
+end
+
+local function QueueDeferredHistoricalRecovery(name, guid, notifyTracker)
+    local rawName = tostring(name or "")
+    local guidText = tostring(guid or "")
+    if rawName == "" and guidText == "" then return end
+
+    local key = IsPlayerGUID(guidText) and ("G:" .. guidText) or ("N:" .. ExactPlayerNameKey(rawName))
+    local existing = deferredHistoricalKeys[key]
+    if existing then
+        if notifyTracker then existing.notifyTracker = true end
+        if rawName ~= "" then existing.name = rawName end
+        if guidText ~= "" then existing.guid = guidText end
+        return
+    end
+
+    local item = { name = rawName, guid = guidText, notifyTracker = notifyTracker and true or false, key = key }
+    deferredHistoricalTail = deferredHistoricalTail + 1
+    deferredHistoricalQueue[deferredHistoricalTail] = item
+    deferredHistoricalKeys[key] = item
+end
+
+local function FindLegacyFloor(history, name, guid)
+    if not history or type(history.legacyFloors) ~= "table" then return nil, nil end
+
+    local key = VictimKey(name, guid)
+    if type(history.legacyFloors[key]) == "table" then
+        return history.legacyFloors[key], key
+    end
+
+    local guidText = tostring(guid or "")
+    local wantExact = ExactPlayerNameKey(name)
+    local wantBase = ExactPlayerNameKey(BasePlayerNameText(name))
+    local wantCanonical = CanonicalPlayerNameKey(name)
+    local exactEntry, exactKey, exactMatches = nil, nil, 0
+    local canonicalEntry, canonicalKey, canonicalMatches = nil, nil, 0
+
+    for oldKey, entry in pairs(history.legacyFloors) do
+        if type(entry) == "table" then
+            if IsPlayerGUID(guidText) and tostring(entry.guid or "") == guidText then
+                return entry, oldKey
+            end
+
+            local entryName = tostring(entry.name or "")
+            if entryName ~= "" then
+                local full = ExactPlayerNameKey(entryName)
+                local base = ExactPlayerNameKey(BasePlayerNameText(entryName))
+                if full == wantExact or base == wantBase then
+                    exactMatches = exactMatches + 1
+                    exactEntry, exactKey = entry, oldKey
+                elseif wantCanonical ~= "" and CanonicalPlayerNameKey(entryName) == wantCanonical then
+                    canonicalMatches = canonicalMatches + 1
+                    canonicalEntry, canonicalKey = entry, oldKey
+                end
+            end
+        end
+    end
+
+    if exactMatches == 1 then return exactEntry, exactKey end
+    if canonicalMatches == 1 then return canonicalEntry, canonicalKey end
+    return nil, nil
+end
+
+local function MergeLegacyGap(history, name, guid, incomingGap, suppressSync)
+    if not history then return nil, false end
+    history.legacyFloors = history.legacyFloors or {}
+
+    local gap = math.max(0, tonumber(incomingGap) or 0)
+    if gap <= 0 then return nil, false end
+
+    local wantedKey = VictimKey(name, guid)
+    local entry, oldKey = FindLegacyFloor(history, name, guid)
+
+    -- Once the real GUID is known, move a unique older name-only floor to the
+    -- GUID key. This permanently resolves later spelling/accent differences.
+    if entry and IsPlayerGUID(guid) and oldKey ~= wantedKey then
+        history.legacyFloors[oldKey] = nil
+        history.legacyFloors[wantedKey] = entry
+        oldKey = wantedKey
+    end
+
+    if not entry then
+        entry = {
+            legacyGap = gap,
+            name = tostring(name or "?"),
+            guid = tostring(guid or ""),
+            capturedAt = Now(),
+            version = 2,
+        }
+        history.legacyFloors[wantedKey] = entry
+    end
+
+    local oldGap = LegacyGapFromEntry(entry)
+    local changed = gap > oldGap
+    if changed then entry.legacyGap = gap end
+    if name and name ~= "" then entry.name = tostring(name) end
+    if IsPlayerGUID(guid) then entry.guid = tostring(guid) end
+    entry.version = 2
+    IndexHistoricalGUID(history, entry)
+
+    -- Keep the old fields populated for readable diagnostics/backward safety,
+    -- but calculations use legacyGap from this build onward.
+    local eventCount = IndexedVictimEventCount(history, name, guid)
+    entry.repoAtCapture = eventCount
+    entry.floor = eventCount + LegacyGapFromEntry(entry)
+    if changed then entry.capturedAt = Now() end
+
+    if changed and not suppressSync and QueueLegacyFloorToPeer then
+        QueueLegacyFloorToPeer(entry)
+    end
+    return entry, changed
+end
+
+local function CompactLegacyFloors(history)
+    if not history or type(history.legacyFloors) ~= "table" then return 0 end
+    local floors = history.legacyFloors
+    local removed = 0
+
+    -- First collapse all entries carrying the same real player GUID.
+    local guidOwner = {}
+    local snapshot = {}
+    for key, entry in pairs(floors) do
+        snapshot[#snapshot + 1] = { key = key, entry = entry }
+    end
+
+    for _, item in ipairs(snapshot) do
+        local key, entry = item.key, item.entry
+        if floors[key] == entry and type(entry) == "table" then
+            local guid = tostring(entry.guid or "")
+            if IsPlayerGUID(guid) then
+                local desiredKey = "G:" .. guid
+                local owner = guidOwner[guid] or floors[desiredKey]
+                if owner and owner ~= entry then
+                    if LegacyGapFromEntry(entry) > LegacyGapFromEntry(owner) then
+                        owner.legacyGap = LegacyGapFromEntry(entry)
+                        owner.name = entry.name or owner.name
+                        owner.capturedAt = math.max(tonumber(owner.capturedAt) or 0, tonumber(entry.capturedAt) or 0)
+                    end
+                    floors[key] = nil
+                    removed = removed + 1
+                else
+                    if key ~= desiredKey then
+                        floors[key] = nil
+                        floors[desiredKey] = entry
+                        removed = removed + 1
+                    end
+                    guidOwner[guid] = entry
+                end
+            end
+        end
+    end
+
+    -- Then attach a name-only floor to a GUID floor only when that GUID match is
+    -- unique. Exact accent-preserving name wins; ASCII accent folding is fallback.
+    local guidEntries = {}
+    for key, entry in pairs(floors) do
+        if type(entry) == "table" and IsPlayerGUID(entry.guid) then
+            guidEntries[#guidEntries + 1] = { key = key, entry = entry }
+        end
+    end
+
+    snapshot = {}
+    for key, entry in pairs(floors) do
+        if type(entry) == "table" and not IsPlayerGUID(entry.guid) then
+            snapshot[#snapshot + 1] = { key = key, entry = entry }
+        end
+    end
+
+    for _, item in ipairs(snapshot) do
+        local key, entry = item.key, item.entry
+        if floors[key] == entry then
+            local exactWant = ExactPlayerNameKey(BasePlayerNameText(entry.name))
+            local canonicalWant = CanonicalPlayerNameKey(entry.name)
+            local exactMatch, exactCount = nil, 0
+            local canonicalMatch, canonicalCount = nil, 0
+
+            for _, candidate in ipairs(guidEntries) do
+                local c = candidate.entry
+                if ExactPlayerNameKey(BasePlayerNameText(c.name)) == exactWant then
+                    exactCount = exactCount + 1
+                    exactMatch = c
+                elseif canonicalWant ~= "" and CanonicalPlayerNameKey(c.name) == canonicalWant then
+                    canonicalCount = canonicalCount + 1
+                    canonicalMatch = c
+                end
+            end
+
+            local target = exactCount == 1 and exactMatch
+                or (exactCount == 0 and canonicalCount == 1 and canonicalMatch)
+            if target then
+                if LegacyGapFromEntry(entry) > LegacyGapFromEntry(target) then
+                    target.legacyGap = LegacyGapFromEntry(entry)
+                end
+                floors[key] = nil
+                removed = removed + 1
+            end
+        end
+    end
+
+    return removed
+end
+
+-- Historical = timestamped repository rows + the old kills that were never
+-- represented by rows. The portable legacyGap is the critical piece: it avoids
+-- double-counting overlap and remains correct after cross-account/file merges.
+local function HistoricalCountWithFloor(history, name, guid, allowCreate, suppressSync)
+    if not history then return 0, 0, 0, 0, nil, nil, nil end
+
+    history.legacyFloors = history.legacyFloors or {}
+
+    local eventCount = IndexedVictimEventCount(history, name, guid)
+    local spyWins, spyKey, spyMethod = VoidMarkLifetimeWins(name, guid)
+    local unresolved = LegacyUnresolvedExtra(history, name, guid)
+    local observedGap = math.max(0, spyWins - eventCount, unresolved)
+
+    local entry = FindLegacyFloor(history, name, guid)
+    local knownGap = LegacyGapFromEntry(entry)
+
+    -- Bind a previously name-only floor to the real GUID as soon as we have it,
+    -- even when the numerical gap did not change.
+    if entry and knownGap > 0 and IsPlayerGUID(guid) then
+        entry = select(1, MergeLegacyGap(history, name, guid, knownGap, true))
+        knownGap = LegacyGapFromEntry(entry)
+    end
+
+    if allowCreate and observedGap > knownGap then
+        entry = select(1, MergeLegacyGap(history, name, guid, observedGap, suppressSync))
+        knownGap = LegacyGapFromEntry(entry)
+    end
+
+    local total = math.max(eventCount + knownGap, eventCount, spyWins, eventCount + unresolved)
+    return total, eventCount, spyWins, unresolved, entry, spyKey, spyMethod
+end
+
+local function ProcessOneDeferredHistoricalRecovery()
+    if InCombatNow() or deferredHistoricalHead > deferredHistoricalTail then return false end
+
+    local item = deferredHistoricalQueue[deferredHistoricalHead]
+    deferredHistoricalQueue[deferredHistoricalHead] = nil
+    deferredHistoricalHead = deferredHistoricalHead + 1
+    if item and item.key then deferredHistoricalKeys[item.key] = nil end
+
+    if deferredHistoricalHead > deferredHistoricalTail then
+        wipe(deferredHistoricalQueue)
+        deferredHistoricalHead = 1
+        deferredHistoricalTail = 0
+    end
+
+    if not item then return false end
+    local history = EnsureHistory()
+    if not history then return false end
+
+    local total = HistoricalCountWithFloor(history, item.name, item.guid, true)
+    if item.notifyTracker and TaliaaGankTracker then
+        if TaliaaGankTracker.OnHistoricalRepair then
+            TaliaaGankTracker:OnHistoricalRepair(item.name, item.guid, tonumber(total) or 0)
+        elseif TaliaaGankTracker.OnHistoryUpdated then
+            TaliaaGankTracker:OnHistoryUpdated(item.name, item.guid, tonumber(total) or 0)
+        end
+    end
+    return true
+end
+
+local function EnsureVictim(history, event, fastOnly)
+    local key = VictimKey(event.name, event.guid)
+    local victim = history.victims[key]
+
+    -- If an older name-key record exists and we now know the GUID, migrate it.
+    -- Local kill hot path: only use exact O(1) aliases. Deep accent/name scans
+    -- are deferred even if WoW has already dropped combat state on the death frame.
+    if not victim and event.guid and tostring(event.guid):sub(1, 6) == "Player" then
+        local oldKey = "N:" .. ExactPlayerNameKey(event.name)
+        local oldVictim = history.victims[oldKey]
+        if not oldVictim and not fastOnly and not InCombatNow() then
+            oldVictim, oldKey = FindVictimByName(history, event.name)
+        end
+        if oldVictim and oldKey and oldKey ~= key then
+            history.victims[oldKey] = nil
+            history.victims[key] = oldVictim
+            victim = oldVictim
+        end
+    end
+
+    if not victim then
+        victim = {
+            name = event.name,
+            guid = event.guid,
+            kills = 0,
+            events = {},
+        }
+        history.victims[key] = victim
+    end
+
+    victim.events = victim.events or {}
+    victim.kills = tonumber(victim.kills) or 0
+    if event.name and event.name ~= "" then victim.name = event.name end
+    if event.guid and event.guid ~= "" then victim.guid = event.guid end
+    IndexHistoricalGUID(history, victim)
+
+    return victim, key
+end
+
+local function IsSameDeath(victim, timestamp, fastOnly)
+    local t = tonumber(timestamp) or 0
+    if t <= 0 then return false end
+
+    -- Live kills are chronological, so lastKill is enough to catch the usual
+    -- UNIT_DIED/PARTY_KILL duplicate without walking every old kill for a victim.
+    local lastKill = tonumber(victim and victim.lastKill) or 0
+    if lastKill > 0 and math.abs(lastKill - t) <= DEDUPE_SECONDS then
+        return true
+    end
+
+    -- Historical/import rows can arrive out of order. Preserve the exhaustive
+    -- check only for non-hot-path work. A local death frame never scans the
+    -- victim's entire event table.
+    if fastOnly or InCombatNow() then return false end
+    for _, oldTime in pairs(victim.events or {}) do
+        oldTime = tonumber(oldTime) or 0
+        if oldTime > 0 and math.abs(oldTime - t) <= DEDUPE_SECONDS then
+            return true
+        end
+    end
+
+    return false
+end
+
+-- Reload-safe legacy repair/import. Older repository builds may already contain
+-- local kills in GankHistory. Rebuild indexes from those records and recover any
+-- event rows that still exist only under victim.events. This is idempotent.
+local function RepairLegacyHistory()
+    local history = EnsureHistory()
+    if not history then return 0, 0 end
+
+    local recovered = 0
+    local oldVictims = history.victims or {}
+    history.legacyUnresolved = history.legacyUnresolved or {}
+
+    -- Recover event rows from the per-victim event map when possible.
+    for _, victim in pairs(oldVictims) do
+        if type(victim) == "table" and type(victim.events) == "table" then
+            local eventSlots = 0
+            for eventID, stamp in pairs(victim.events) do
+                eventSlots = eventSlots + 1
+                eventID = tostring(eventID or "")
+                if eventID ~= "" and history.events[eventID] == nil then
+                    history.events[eventID] = {
+                        id = eventID,
+                        t = tonumber(stamp) or tonumber(victim.lastKill) or 0,
+                        name = tostring(victim.name or "?"),
+                        guid = tostring(victim.guid or ""),
+                        zone = tostring(victim.lastZone or "Unknown"),
+                        subZone = tostring(victim.lastSubZone or ""),
+                        level = victim.lastLevel or "?",
+                        class = victim.lastClass or "",
+                        killer = tostring(victim.lastKiller or ""),
+                        faction = CurrentFaction(),
+                    }
+                    recovered = recovered + 1
+                end
+            end
+            local claimed = tonumber(victim.kills) or 0
+            if claimed > eventSlots then
+                local unresolvedKey = tostring(victim.guid or victim.name or "?")
+                history.legacyUnresolved[unresolvedKey] = math.max(
+                    tonumber(history.legacyUnresolved[unresolvedKey]) or 0,
+                    claimed - eventSlots
+                )
+            end
+        elseif type(victim) == "table" and (tonumber(victim.kills) or 0) > 0 then
+            local unresolvedKey = tostring(victim.guid or victim.name or "?")
+            history.legacyUnresolved[unresolvedKey] = math.max(
+                tonumber(history.legacyUnresolved[unresolvedKey]) or 0,
+                tonumber(victim.kills) or 0
+            )
+        end
+    end
+
+    -- Rebuild all derived indexes from the authoritative event rows.
+    history.victims = {}
+    history.seenIDs = {}
+    history.eventCount = 0
+    history.lastEventTime = 0
+
+    local events = {}
+    for id, event in pairs(history.events) do
+        if type(event) == "table" then
+            event.id = tostring(event.id or id)
+            event.t = tonumber(event.t) or 0
+            event.name = tostring(event.name or "?")
+            event.guid = tostring(event.guid or "")
+            event.faction = tostring(event.faction or CurrentFaction())
+            events[#events + 1] = event
+        end
+    end
+    table.sort(events, function(a, b)
+        local at, bt = tonumber(a.t) or 0, tonumber(b.t) or 0
+        if at == bt then return tostring(a.id) < tostring(b.id) end
+        return at < bt
+    end)
+
+    for _, event in ipairs(events) do
+        local eventID = tostring(event.id)
+        local key = VictimKey(event.name, event.guid)
+        local victim = history.victims[key]
+        if not victim then
+            victim = { name = event.name, guid = event.guid, kills = 0, events = {} }
+            history.victims[key] = victim
+        end
+        victim.events = victim.events or {}
+
+        -- Same-death protection also applies while rebuilding mixed histories.
+        if not IsSameDeath(victim, event.t) then
+            history.seenIDs[eventID] = true
+            victim.events[eventID] = tonumber(event.t) or 0
+            victim.kills = (tonumber(victim.kills) or 0) + 1
+            local eventTime = tonumber(event.t) or 0
+            if not victim.firstKill or eventTime < victim.firstKill then victim.firstKill = eventTime end
+            if not victim.lastKill or eventTime >= victim.lastKill then
+                victim.lastKill = eventTime
+                victim.lastZone = event.zone
+                victim.lastSubZone = event.subZone
+                victim.lastLevel = event.level
+                victim.lastClass = event.class
+                victim.lastKiller = event.killer
+            end
+            history.eventCount = history.eventCount + 1
+            history.lastEventTime = math.max(tonumber(history.lastEventTime) or 0, eventTime)
+        else
+            -- Drop duplicate event rows so the daily tracker (which counts
+            -- history.events directly) cannot double-count after /reload.
+            history.events[eventID] = nil
+            history.seenIDs[eventID] = true
+        end
+    end
+
+    -- Promote every old unresolved legacy amount into a portable floor record.
+    -- legacyUnresolved already represents kills missing from event rows, so its
+    -- value is directly usable as legacyGap. This lets offline/BNet sync carry
+    -- those old kills even before the player is encountered again.
+    for unresolvedKey, extra in pairs(history.legacyUnresolved or {}) do
+        extra = math.max(0, tonumber(extra) or 0)
+        if extra > 0 then
+            local unresolvedGUID = IsPlayerGUID(unresolvedKey) and tostring(unresolvedKey) or ""
+            local unresolvedName = IsPlayerGUID(unresolvedKey) and "?" or tostring(unresolvedKey or "?")
+            if unresolvedGUID ~= "" then
+                local victim = history.victims and history.victims["G:" .. unresolvedGUID]
+                if type(victim) == "table" and victim.name then
+                    unresolvedName = tostring(victim.name)
+                end
+            end
+            MergeLegacyGap(history, unresolvedName, unresolvedGUID, extra, true)
+        end
+    end
+
+    -- Migrate v7 absolute floors to the portable v8 legacy-gap format and
+    -- collapse old name aliases onto their unique GUID identity where safe.
+    for _, entry in pairs(history.legacyFloors or {}) do
+        if type(entry) == "table" then
+            LegacyGapFromEntry(entry)
+        end
+    end
+    CompactLegacyFloors(history)
+    RebuildHistoricalGUIDIndex(history)
+
+    history.version = HISTORY_VERSION
+    local sync = EnsureSyncDB()
+    if sync then sync.historyRepairVersion = HISTORY_VERSION end
+    return history.eventCount, recovered
+end
+
+local function NotifyHistoryUpdated(event, count)
+    if TaliaaGankTracker and TaliaaGankTracker.OnHistoryUpdated then
+        TaliaaGankTracker:OnHistoryUpdated(event.name, event.guid, count)
+    end
+end
+
+local function AddEvent(event, suppressNotify, skipHistoricalRecovery)
+    local history = EnsureHistory()
+    if not history or not event or not event.id then return false, 0, "no database" end
+
+    if IsExplicitNonPlayerGUID(event.guid) then
+        return false, 0, "non-player"
+    end
+
+    local eventID = tostring(event.id)
+    if history.events[eventID] or history.seenIDs[eventID] then
+        local victim = history.victims[VictimKey(event.name, event.guid)]
+        if not victim then victim = FindVictimByName(history, event.name) end
+        return false, victim and (tonumber(victim.kills) or 0) or 0, "known id"
+    end
+
+    local fastOnly = skipHistoricalRecovery and true or false
+    local victim, key = EnsureVictim(history, event, fastOnly)
+
+    -- Two logged-in accounts can see the same death. Treat the same victim
+    -- dying within a few seconds as one historical gank, even if each account
+    -- generated its own local event ID.
+    if IsSameDeath(victim, event.t, fastOnly) then
+        history.seenIDs[eventID] = true
+        return false, tonumber(victim.kills) or 0, "same death"
+    end
+
+    history.events[eventID] = event
+    history.seenIDs[eventID] = true
+    victim.events[eventID] = tonumber(event.t) or Now()
+    victim.kills = (tonumber(victim.kills) or 0) + 1
+
+    local eventTime = tonumber(event.t) or Now()
+    if not victim.firstKill or eventTime < victim.firstKill then victim.firstKill = eventTime end
+    if not victim.lastKill or eventTime >= victim.lastKill then
+        victim.lastKill = eventTime
+        victim.lastZone = event.zone
+        victim.lastSubZone = event.subZone
+        victim.lastLevel = event.level
+        victim.lastClass = event.class
+        victim.lastKiller = event.killer
+    end
+
+    history.eventCount = (tonumber(history.eventCount) or 0) + 1
+    history.lastEventTime = math.max(tonumber(history.lastEventTime) or 0, eventTime)
+
+    local historicalCount
+    if skipHistoricalRecovery or InCombatNow() then
+        local eventCount, spyWins, unresolved, entry
+        historicalCount, eventCount, spyWins, unresolved, entry =
+            FastHistoricalCount(history, event.name, event.guid)
+
+        -- Deep accent/legacy recovery can walk thousands of VoidMark/history records.
+        -- Do not queue that work after every ordinary kill. Queue it only when
+        -- the fast indexes show evidence that something actually needs repair.
+        local knownGap = LegacyGapFromEntry(entry)
+        local needsRecovery =
+            (tonumber(spyWins) or 0) > ((tonumber(eventCount) or 0) + knownGap)
+            or (tonumber(unresolved) or 0) > knownGap
+
+        if entry and IsPlayerGUID(event.guid) then
+            local entryGUID = tostring(entry.guid or "")
+            if entryGUID == "" or entryGUID ~= tostring(event.guid) then
+                needsRecovery = true
+            end
+        end
+
+        if needsRecovery then
+            QueueDeferredHistoricalRecovery(event.name, event.guid, not suppressNotify)
+        end
+    else
+        historicalCount = HistoricalCountWithFloor(
+            history, event.name, event.guid, true, suppressNotify and true or false
+        )
+    end
+    if not suppressNotify then
+        NotifyHistoryUpdated(event, historicalCount)
+    end
+    return true, tonumber(historicalCount) or victim.kills, key
+end
+
+local function EncodeEvent(event)
+    return table.concat({
+        "E",
+        CleanField(EnsureLocalSessionToken()),
+        CleanField(event.id),
+        tostring(tonumber(event.t) or 0),
+        CleanField(event.name),
+        CleanField(event.guid),
+        CleanField(event.zone),
+        CleanField(event.subZone),
+        CleanField(event.level),
+        CleanField(event.class),
+        CleanField(event.killer),
+        CleanField(event.faction),
+    }, SEP)
+end
+
+local function DecodeEvent(parts)
+    if not parts or parts[1] ~= "E" then return nil end
+    if not parts[3] or parts[3] == "" then return nil end
+
+    return {
+        id = parts[3],
+        t = tonumber(parts[4]) or 0,
+        name = parts[5] or "?",
+        guid = parts[6] or "",
+        zone = parts[7] or "",
+        subZone = parts[8] or "",
+        level = tonumber(parts[9]) or parts[9] or "?",
+        class = parts[10] or "",
+        killer = parts[11] or "",
+        faction = parts[12] or "",
+    }
+end
+
+local function EncodeDHKEvent(event)
+    return table.concat({
+        "H",
+        CleanField(EnsureLocalSessionToken()),
+        CleanField(event.id),
+        tostring(tonumber(event.t) or 0),
+        CleanField(event.character),
+        CleanField(event.message),
+        CleanField(event.zone),
+        CleanField(event.faction),
+        CleanField(event.source),
+    }, SEP)
+end
+
+local function DecodeDHKEvent(parts)
+    if not parts or parts[1] ~= "H" then return nil end
+    if not parts[3] or parts[3] == "" then return nil end
+
+    return {
+        id = parts[3],
+        t = tonumber(parts[4]) or 0,
+        character = parts[5] or "",
+        message = parts[6] or "",
+        zone = parts[7] or "",
+        faction = parts[8] or "",
+        source = parts[9] or "",
+    }
+end
+
+local function EncodeLegacyFloor(entry)
+    return table.concat({
+        "F",
+        CleanField(EnsureLocalSessionToken()),
+        CleanField(entry and entry.name or "?"),
+        CleanField(entry and entry.guid or ""),
+        tostring(LegacyGapFromEntry(entry)),
+    }, SEP)
+end
+
+local function DecodeLegacyFloor(parts)
+    if not parts or parts[1] ~= "F" then return nil end
+    local gap = tonumber(parts[5]) or 0
+    if gap <= 0 then return nil end
+    return {
+        name = parts[3] or "?",
+        guid = parts[4] or "",
+        legacyGap = gap,
+    }
+end
+
+local function SendBN(gameAccountID, payload)
+    local id = tonumber(gameAccountID)
+    if not id or not payload or payload == "" then return false end
+
+    -- pcall() only tells us whether the API threw a Lua error. Some Classic Era
+    -- Battle.net builds can explicitly return false when a game-data packet was
+    -- not accepted (for example during transient throttling). Treat only an
+    -- explicit false as failure; nil is accepted because older API variants do
+    -- not return a success value at all.
+    local ok, result
+    if BNSendGameData then
+        ok, result = pcall(BNSendGameData, id, PREFIX, payload)
+    elseif C_BattleNet and C_BattleNet.SendGameData then
+        ok, result = pcall(C_BattleNet.SendGameData, id, PREFIX, payload)
+    else
+        return false
+    end
+
+    if not ok or result == false then return false end
+    return true
+end
+
+local function QueuePayload(gameAccountID, payload)
+    local id = tonumber(gameAccountID)
+    if not id or not payload then return end
+    sendTail = sendTail + 1
+    sendQueue[sendTail] = { id = id, payload = payload }
+end
+
+local function QueueEventToPeer(event)
+    local sync = EnsureSyncDB()
+    if not sync or sync.enabled == false or not sync.peerGameAccountID then return end
+    QueuePayload(sync.peerGameAccountID, EncodeEvent(event))
+end
+
+local function QueueDHKEventToPeer(event)
+    local sync = EnsureSyncDB()
+    if not sync or sync.enabled == false or not sync.peerGameAccountID then return end
+    QueuePayload(sync.peerGameAccountID, EncodeDHKEvent(event))
+end
+
+QueueLegacyFloorToPeer = function(entry)
+    local sync = EnsureSyncDB()
+    if not sync or sync.enabled == false or not sync.peerGameAccountID then return end
+    if not entry or LegacyGapFromEntry(entry) <= 0 then return end
+    QueuePayload(sync.peerGameAccountID, EncodeLegacyFloor(entry))
+end
+
+local function QueueAllLegacyFloors(gameAccountID)
+    local history = EnsureHistory()
+    if not history or type(history.legacyFloors) ~= "table" then return 0 end
+    CompactLegacyFloors(history)
+
+    local sent = 0
+    for _, entry in pairs(history.legacyFloors) do
+        if type(entry) == "table" and LegacyGapFromEntry(entry) > 0 then
+            QueuePayload(gameAccountID, EncodeLegacyFloor(entry))
+            sent = sent + 1
+        end
+    end
+    return sent
+end
+
+local function QueueAllEvents(gameAccountID)
+    local history = EnsureHistory()
+    if not history then return 0 end
+
+    local events = {}
+    for _, event in pairs(history.events) do
+        if event and event.id then events[#events + 1] = event end
+    end
+    table.sort(events, function(a, b)
+        local at = tonumber(a.t) or 0
+        local bt = tonumber(b.t) or 0
+        if at == bt then return tostring(a.id) < tostring(b.id) end
+        return at < bt
+    end)
+
+    for _, event in ipairs(events) do
+        QueuePayload(gameAccountID, EncodeEvent(event))
+    end
+
+    local dhkHistory = EnsureDHKHistory()
+    local dhkEvents = {}
+    if dhkHistory and type(dhkHistory.events) == "table" then
+        for _, event in pairs(dhkHistory.events) do
+            if type(event) == "table" and event.id then
+                dhkEvents[#dhkEvents + 1] = event
+            end
+        end
+        table.sort(dhkEvents, function(a, b)
+            local at = tonumber(a.t) or 0
+            local bt = tonumber(b.t) or 0
+            if at == bt then return tostring(a.id) < tostring(b.id) end
+            return at < bt
+        end)
+
+        for _, event in ipairs(dhkEvents) do
+            QueuePayload(gameAccountID, EncodeDHKEvent(event))
+        end
+    end
+
+    local floorCount = QueueAllLegacyFloors(gameAccountID)
+
+    QueuePayload(gameAccountID, table.concat({
+        "D",
+        CleanField(EnsureLocalSessionToken()),
+        tostring(#events),
+        tostring(#dhkEvents),
+        tostring(floorCount),
+    }, SEP))
+    return #events, #dhkEvents, floorCount
+end
+
+-- Build the sync inventory incrementally. The old implementation collected and
+-- sorted every known ID in one Lua execution, which could freeze the client for
+-- long enough to trip WoW's script execution limit on large repositories.
+local function QueueInventoryAsync(gameAccountID, tx, requestReply, onComplete)
+    local history = EnsureHistory()
+    local dhkHistory = EnsureDHKHistory()
+
+    local job = {
+        gameAccountID = gameAccountID,
+        tx = tostring(tx or ""),
+        requestReply = requestReply and true or false,
+        phase = "killEvents",
+        key = nil,
+        seenKills = {},
+        seenDHKs = {},
+        killCount = 0,
+        dhkCount = 0,
+        chunk = {},
+        chunkBytes = 0,
+    }
+
+    local function Flush(kind)
+        if #job.chunk == 0 then return end
+        QueuePayload(job.gameAccountID, table.concat({
+            "I",
+            CleanField(EnsureLocalSessionToken()),
+            CleanField(job.tx),
+            kind,
+            table.concat(job.chunk, ID_LIST_SEP),
+        }, SEP))
+        wipe(job.chunk)
+        job.chunkBytes = 0
+    end
+
+    local function AddID(kind, rawID)
+        local id = tostring(rawID or ""):gsub(ID_LIST_SEP, "")
+        if id == "" then return end
+
+        local seen = (kind == "K") and job.seenKills or job.seenDHKs
+        if seen[id] then return end
+        seen[id] = true
+
+        if kind == "K" then
+            job.killCount = job.killCount + 1
+        else
+            job.dhkCount = job.dhkCount + 1
+        end
+
+        local addBytes = #id + (#job.chunk > 0 and 1 or 0)
+        if #job.chunk > 0 and (job.chunkBytes + addBytes) > INVENTORY_CHUNK_BYTES then
+            Flush(kind)
+        end
+
+        job.chunk[#job.chunk + 1] = id
+        job.chunkBytes = job.chunkBytes + addBytes
+    end
+
+    local function SwitchPhase(nextPhase, currentKind)
+        Flush(currentKind)
+        job.phase = nextPhase
+        job.key = nil
+    end
+
+    local function Step()
+        local processed = 0
+
+        while processed < SYNC_BUILD_BATCH do
+            if job.phase == "killEvents" then
+                local tbl = history and history.events or nil
+                local k = tbl and next(tbl, job.key) or nil
+                if k == nil then
+                    SwitchPhase("killSeen", "K")
+                else
+                    job.key = k
+                    AddID("K", k)
+                    processed = processed + 1
+                end
+
+            elseif job.phase == "killSeen" then
+                local tbl = history and history.seenIDs or nil
+                local k, v = tbl and next(tbl, job.key) or nil, nil
+                if k ~= nil and tbl then v = tbl[k] end
+                if k == nil then
+                    SwitchPhase("dhkEvents", "K")
+                else
+                    job.key = k
+                    if v then AddID("K", k) end
+                    processed = processed + 1
+                end
+
+            elseif job.phase == "dhkEvents" then
+                local tbl = dhkHistory and dhkHistory.events or nil
+                local k = tbl and next(tbl, job.key) or nil
+                if k == nil then
+                    SwitchPhase("dhkSeen", "H")
+                else
+                    job.key = k
+                    AddID("H", k)
+                    processed = processed + 1
+                end
+
+            elseif job.phase == "dhkSeen" then
+                local tbl = dhkHistory and dhkHistory.seenIDs or nil
+                local k, v = tbl and next(tbl, job.key) or nil, nil
+                if k ~= nil and tbl then v = tbl[k] end
+                if k == nil then
+                    Flush("H")
+                    QueuePayload(job.gameAccountID, table.concat({
+                        "J",
+                        CleanField(EnsureLocalSessionToken()),
+                        CleanField(job.tx),
+                        job.requestReply and "1" or "0",
+                        tostring(job.killCount),
+                        tostring(job.dhkCount),
+                    }, SEP))
+
+                    if onComplete then
+                        onComplete(job.killCount, job.dhkCount)
+                    end
+                    return
+                else
+                    job.key = k
+                    if v then AddID("H", k) end
+                    processed = processed + 1
+                end
+            end
+        end
+
+        C_Timer.After(0, Step)
+    end
+
+    C_Timer.After(0, Step)
+end
+
+local function RememberInventoryChunk(parts)
+    local tx = tostring(parts and parts[3] or "")
+    local kind = tostring(parts and parts[4] or "")
+    local data = tostring(parts and parts[5] or "")
+    if tx == "" or (kind ~= "K" and kind ~= "H") then return end
+
+    local slot = incomingInventories[tx]
+    if not slot then
+        slot = { kills = {}, dhks = {}, startedAt = Now() }
+        incomingInventories[tx] = slot
+    end
+
+    local target = (kind == "K") and slot.kills or slot.dhks
+    local start = 1
+    while start <= #data do
+        local p = data:find(ID_LIST_SEP, start, true)
+        local id
+        if p then
+            id = data:sub(start, p - 1)
+            start = p + 1
+        else
+            id = data:sub(start)
+            start = #data + 1
+        end
+        if id and id ~= "" then target[id] = true end
+    end
+
+    local now = Now()
+    for key, oldSlot in pairs(incomingInventories) do
+        if oldSlot and (now - (tonumber(oldSlot.startedAt) or now)) > 120 then
+            incomingInventories[key] = nil
+        end
+    end
+end
+
+-- Compare repositories incrementally. This used to walk + sort thousands of
+-- events synchronously when the peer inventory arrived, causing 20-30 second
+-- stalls and execution-time-limit errors. Ordering is irrelevant for correctness;
+-- event IDs are authoritative and the send queue already preserves packet order.
+local function QueueMissingEventsAsync(gameAccountID, remoteKills, remoteDHKs, tx, finalLeg, onComplete)
+    remoteKills = remoteKills or {}
+    remoteDHKs = remoteDHKs or {}
+    tx = tostring(tx or "")
+
+    local history = EnsureHistory()
+    local dhkHistory = EnsureDHKHistory()
+    local phase = "kills"
+    local key = nil
+    local sentKills, sentDHKs = 0, 0
+
+    local function Finish()
+        local sentFloors = QueueAllLegacyFloors(gameAccountID)
+
+        QueuePayload(gameAccountID, table.concat({
+            "D",
+            CleanField(EnsureLocalSessionToken()),
+            CleanField(tx),
+            finalLeg and "1" or "0",
+            tostring(sentKills),
+            tostring(sentDHKs),
+            tostring(sentFloors),
+        }, SEP))
+
+        if onComplete then
+            onComplete(sentKills, sentDHKs, sentFloors)
+        end
+    end
+
+    local function Step()
+        local processed = 0
+
+        while processed < SYNC_BUILD_BATCH do
+            if phase == "kills" then
+                local tbl = history and history.events or nil
+                local k, event = nil, nil
+                if tbl then
+                    k, event = next(tbl, key)
+                end
+
+                if k == nil then
+                    phase = "dhks"
+                    key = nil
+                else
+                    key = k
+                    local id = tostring(k or (event and event.id) or "")
+                    if event and id ~= "" and not remoteKills[id] then
+                        QueuePayload(gameAccountID, EncodeEvent(event))
+                        sentKills = sentKills + 1
+                    end
+                    processed = processed + 1
+                end
+
+            elseif phase == "dhks" then
+                local tbl = dhkHistory and dhkHistory.events or nil
+                local k, event = nil, nil
+                if tbl then
+                    k, event = next(tbl, key)
+                end
+
+                if k == nil then
+                    Finish()
+                    return
+                else
+                    key = k
+                    local id = tostring(k or (event and event.id) or "")
+                    if event and id ~= "" and not remoteDHKs[id] then
+                        QueuePayload(gameAccountID, EncodeDHKEvent(event))
+                        sentDHKs = sentDHKs + 1
+                    end
+                    processed = processed + 1
+                end
+            end
+        end
+
+        C_Timer.After(0, Step)
+    end
+
+    C_Timer.After(0, Step)
+end
+
+local function NextLocalDHKEventID(sync, history)
+    local node = tostring(sync and sync.nodeID or "")
+    if node == "" then return nil end
+
+    local seq = tonumber(sync.nextDHKSeq) or 0
+    local tries = 0
+    repeat
+        seq = seq + 1
+        tries = tries + 1
+        local eventID = "DHK-" .. node .. "-" .. tostring(seq)
+        if not history.events[eventID] and not history.seenIDs[eventID] then
+            sync.nextDHKSeq = seq
+            return eventID
+        end
+    until tries >= 100000
+
+    return nil
+end
+
+function Repo:RecordDHK(message, details)
+    local sync = EnsureSyncDB()
+    local history = EnsureDHKHistory()
+    if not sync or not history then return false, 0 end
+
+    local eventID = NextLocalDHKEventID(sync, history)
+    if not eventID then return false, tonumber(history.eventCount) or 0 end
+
+    details = details or {}
+    local event = {
+        id = eventID,
+        t = tonumber(details.timestamp) or Now(),
+        character = tostring(details.character or VMAPI.UnitName("player") or "?"),
+        message = tostring(message or ""),
+        zone = tostring(details.zone or GetZoneText() or ""),
+        faction = tostring(details.faction or CurrentFaction()),
+        source = tostring(details.source or ""),
+    }
+
+    local added, count = AddDHKEvent(event)
+    if added then
+        QueueDHKEventToPeer(event)
+    end
+
+    return added, tonumber(count) or 0
+end
+
+function Repo:GetDHKEventsInRange(startTime, endTime)
+    local history = EnsureDHKHistory()
+    local out = {}
+    if not history or type(history.events) ~= "table" then return out end
+
+    local first = tonumber(startTime) or 0
+    local last = tonumber(endTime) or (Now() + 60)
+
+    for _, event in pairs(history.events) do
+        if type(event) == "table" then
+            local t = tonumber(event.t) or 0
+            if t >= first and t <= last then
+                out[#out + 1] = event
+            end
+        end
+    end
+
+    table.sort(out, function(a, b)
+        local at = tonumber(a and a.t) or 0
+        local bt = tonumber(b and b.t) or 0
+        if at == bt then return tostring(a and a.id or "") < tostring(b and b.id or "") end
+        return at < bt
+    end)
+
+    return out
+end
+
+function Repo:GetDHKCount()
+    local history = EnsureDHKHistory()
+    return history and (tonumber(history.eventCount) or 0) or 0
+end
+
+function Repo:RemoveBrokenSyntheticDHKsForCharacterInRange(character, startTime, endTime, authoritativeCount)
+    return RemoveBrokenSyntheticDHKsForCharacterInRange(
+        character, startTime, endTime, authoritativeCount
+    )
+end
+
+function Repo:GetDHKCountForCharacterInRange(character, startTime, endTime)
+    local history = EnsureDHKHistory()
+    if not history or type(history.events) ~= "table" then return 0 end
+
+    local wantCharacter = NormalizeDHKCharacter(character)
+    local first = tonumber(startTime) or 0
+    local last = tonumber(endTime) or (Now() + 60)
+    local count = 0
+
+    for _, event in pairs(history.events) do
+        if type(event) == "table"
+            and NormalizeDHKCharacter(event.character) == wantCharacter then
+            local t = tonumber(event.t) or 0
+            if t >= first and t <= last then
+                count = count + 1
+            end
+        end
+    end
+
+    return count
+end
+
+function Repo:GetHistoricalCount(playerName, playerGUID)
+    local history = EnsureHistory()
+    if not history then return 0 end
+
+    if InCombatNow() then
+        local total = select(1, FastHistoricalCount(history, playerName, playerGUID))
+        QueueDeferredHistoricalRecovery(playerName, playerGUID, false)
+        return tonumber(total) or 0
+    end
+
+    local total = HistoricalCountWithFloor(history, playerName, playerGUID, true)
+    return tonumber(total) or 0
+end
+
+function Repo:CanonicalPlayerName(playerName)
+    return CanonicalPlayerNameKey(playerName)
+end
+
+-- Diagnostic helper for future recovery/debug work. Returns:
+-- total, event rows, VoidMark wins, unresolved extras, legacy gap, diagnostic floor,
+-- repo-at-capture, matched VoidMark key, and the identity-match method.
+function Repo:GetHistoricalBreakdown(playerName, playerGUID)
+    local history = EnsureHistory()
+    if not history then return 0, 0, 0, 0, 0, 0, 0, nil, nil end
+
+    local total, events, spyWins, unresolved, entry, spyKey, spyMethod =
+        HistoricalCountWithFloor(history, playerName, playerGUID, true)
+
+    local gap = LegacyGapFromEntry(entry)
+    return tonumber(total) or 0,
+           tonumber(events) or 0,
+           tonumber(spyWins) or 0,
+           tonumber(unresolved) or 0,
+           tonumber(gap) or 0,
+           entry and (tonumber(entry.floor) or 0) or 0,
+           entry and (tonumber(entry.repoAtCapture) or 0) or 0,
+           spyKey, spyMethod
+end
+
+-- PERFORMANCE-CRITICAL compatibility helper used by VoidMark's compact rows
+-- and tooltips. After the one-time out-of-combat index build, each lookup is
+-- O(1); combat refreshes never walk the full VoidMark/victim/legacy tables.
+--
+-- Name-to-GUID aliases are built once outside combat and updated as rows arrive.
+-- Use the same direct historical calculation as RecordKill, including missing
+-- legacy kills. A sighting must not wait for another death to reveal its history.
+function Repo:GetHistoricalStats(playerName, playerGUID)
+    local history = EnsureHistory()
+    if not history then return 0, 0 end
+
+    if not HistoricalGUIDIndex(history).ready and not InCombatNow() then
+        RebuildHistoricalGUIDIndex(history)
+    end
+    if not InCombatNow() then EnsureLegacyVoidMarkLookup() end
+    local total = select(1, FastHistoricalCount(history, playerName, playerGUID))
+    return math.max(0, tonumber(total) or 0), 0
+end
+
+function Repo:GetRawEventCount()
+    local history = EnsureHistory()
+    if not history or type(history.events) ~= "table" then return 0 end
+
+    local raw = 0
+    for _, event in pairs(history.events) do
+        if type(event) == "table" then raw = raw + 1 end
+    end
+    return raw
+end
+
+local repoStatsCache = {
+    history = nil,
+    eventCount = -1,
+    victimCount = 0,
+}
+
+-- Statistics-facing snapshot of the permanent merged repository.
+-- This is intentionally built only when the Statistics window recalculates; it
+-- is not used by the combat hot path.
+function Repo:GetStatisticsSnapshot()
+    local history = EnsureHistory()
+    local out = {}
+    if not history then return out end
+
+    -- Statistics must stay a cheap presentation path. Deep historical recovery
+    -- (FindLegacyFloor/LegacyUnresolved/alias repair) can walk thousands of
+    -- records and previously ran once per displayed player, freezing Classic.
+    -- Build direct O(1) lookup maps once, then resolve every row from them.
+    local byGUID, byExact, byBase = {}, {}, {}
+    local floorByGUID, floorByExact, floorByBase = {}, {}, {}
+
+    local function exactKey(name)
+        return ExactPlayerNameKey(tostring(name or ""))
+    end
+    local function baseKey(name)
+        return ExactPlayerNameKey(BasePlayerNameText(tostring(name or "")))
+    end
+    local function findRow(name, guid)
+        local g = tostring(guid or "")
+        if IsPlayerGUID(g) and byGUID[g] then return byGUID[g] end
+        local e = exactKey(name)
+        if e ~= "" and byExact[e] then return byExact[e] end
+        local b = baseKey(name)
+        if b ~= "" and byBase[b] and byBase[b] ~= false then return byBase[b] end
+        return nil
+    end
+    local function bindRow(row)
+        local g = tostring(row.guid or "")
+        if IsPlayerGUID(g) then byGUID[g] = row end
+        local e = exactKey(row.name)
+        if e ~= "" then byExact[e] = row end
+        local b = baseKey(row.name)
+        if b ~= "" then
+            if byBase[b] == nil or byBase[b] == row then byBase[b] = row
+            else byBase[b] = false end
+        end
+    end
+    local function touch(name, guid)
+        local row = findRow(name, guid)
+        if not row then
+            row = { name = tostring(name or "?"), guid = tostring(guid or ""), time = 0 }
+            out[#out + 1] = row
+            bindRow(row)
+        elseif IsPlayerGUID(guid) and not IsPlayerGUID(row.guid) then
+            row.guid = tostring(guid)
+            bindRow(row)
+        end
+        return row
+    end
+    local function newer(row, t)
+        return (tonumber(t) or 0) >= (tonumber(row.time) or 0)
+    end
+    local function bindFloor(entry)
+        if type(entry) ~= "table" then return end
+        local gap = LegacyGapFromEntry(entry)
+        if gap <= 0 then return end
+        local g = tostring(entry.guid or "")
+        if IsPlayerGUID(g) then floorByGUID[g] = math.max(floorByGUID[g] or 0, gap) end
+        local e = exactKey(entry.name)
+        if e ~= "" then floorByExact[e] = math.max(floorByExact[e] or 0, gap) end
+        local b = baseKey(entry.name)
+        if b ~= "" then floorByBase[b] = math.max(floorByBase[b] or 0, gap) end
+    end
+    local function directFloor(row)
+        local g = tostring(row.guid or "")
+        if IsPlayerGUID(g) and floorByGUID[g] then return floorByGUID[g] end
+        return floorByExact[exactKey(row.name)] or floorByBase[baseKey(row.name)] or 0
+    end
+
+    local playerData = VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData
+    if type(playerData) == "table" then
+        for key, data in pairs(playerData) do
+            if type(data) == "table" then
+                local name = tostring(data.name or key or "?")
+                local guid = tostring(data.guid or data.GUID or "")
+                local row = touch(name, guid)
+                local t = tonumber(data.time) or 0
+                row.spyWins = math.max(tonumber(row.spyWins) or 0, tonumber(data.wins) or 0)
+                row.loses = math.max(tonumber(row.loses) or 0, tonumber(data.loses) or 0)
+                row.kos = row.kos or data.kos
+                row.reason = row.reason or data.reason
+                row.guild = data.guild or row.guild
+                row.rank = data.rank or row.rank
+                row.faction = data.faction or row.faction
+                if newer(row, t) then
+                    row.time = t
+                    row.level = data.level or row.level
+                    row.class = data.class or row.class
+                    row.zone = data.zone or row.zone
+                    row.subZone = data.subZone or row.subZone
+                end
+            end
+        end
+    end
+
+    for _, event in pairs(history.events or {}) do
+        if type(event) == "table" and not IsExplicitNonPlayerGUID(event.guid) then
+            local row = touch(event.name, event.guid)
+            row.repoEvents = (tonumber(row.repoEvents) or 0) + 1
+            local t = tonumber(event.t or event.time or event.timestamp) or 0
+            if newer(row, t) then
+                row.time = t
+                row.name = tostring(event.name or row.name or "?")
+                if IsPlayerGUID(event.guid) then row.guid = tostring(event.guid) end
+                row.zone = event.zone or row.zone
+                row.subZone = event.subZone or row.subZone
+                row.level = event.level or row.level
+                row.class = event.class or row.class
+                bindRow(row)
+            end
+        end
+    end
+
+    -- Victim counts are already deduped/repaired by the repository. Prefer them
+    -- over the raw per-row count when larger.
+    for _, victim in pairs(history.victims or {}) do
+        if type(victim) == "table" and not IsExplicitNonPlayerGUID(victim.guid) then
+            local row = touch(victim.name, victim.guid)
+            row.repoEvents = math.max(tonumber(row.repoEvents) or 0, tonumber(victim.kills) or 0)
+            local t = tonumber(victim.lastKill) or 0
+            if newer(row, t) then
+                row.time = t
+                row.zone = victim.lastZone or row.zone
+                row.subZone = victim.lastSubZone or row.subZone
+                row.level = victim.lastLevel or row.level
+                row.class = victim.lastClass or row.class
+            end
+        end
+    end
+
+    for _, entry in pairs(history.legacyFloors or {}) do
+        if type(entry) == "table" and LegacyGapFromEntry(entry) > 0 then
+            bindFloor(entry)
+            touch(entry.name, entry.guid)
+        end
+    end
+
+    local legacyPlayers = VoidMarkDB and VoidMarkDB.VoidMarkLegacyPlayers
+    if type(legacyPlayers) == "table" then
+        for legacyName, legacyData in pairs(legacyPlayers) do
+            if type(legacyData) == "table" and ((tonumber(legacyData.wins) or 0) > 0 or (tonumber(legacyData.loses) or 0) > 0) then
+                local row = touch(legacyName, "")
+                row.legacyWins = math.max(tonumber(row.legacyWins) or 0, tonumber(legacyData.wins) or 0)
+                row.legacyLoses = math.max(tonumber(row.legacyLoses) or 0, tonumber(legacyData.loses) or 0)
+                local t = tonumber(legacyData.time) or 0
+                row.guild = (legacyData.guild and legacyData.guild ~= "") and legacyData.guild or row.guild
+                row.rank = (tonumber(legacyData.rank) or 0) > 0 and legacyData.rank or row.rank
+                row.faction = (legacyData.faction and legacyData.faction ~= "") and legacyData.faction or row.faction
+                if t >= (tonumber(row.time) or 0) then
+                    row.time = t > 0 and t or row.time
+                    row.level = (tonumber(legacyData.level) or 0) > 0 and legacyData.level or row.level
+                    row.class = (legacyData.class and legacyData.class ~= "") and legacyData.class or row.class
+                    row.zone = (legacyData.zone and legacyData.zone ~= "") and legacyData.zone or row.zone
+                    row.subZone = (legacyData.subZone and legacyData.subZone ~= "") and legacyData.subZone or row.subZone
+                end
+            end
+        end
+    end
+
+    for _, row in ipairs(out) do
+        local repoEvents = tonumber(row.repoEvents) or 0
+        local floor = directFloor(row)
+        local legacyWins = tonumber(row.legacyWins) or 0
+        if legacyWins <= 0 then legacyWins = select(1, LegacyVoidMarkLifetimeWins(row.name)) end
+        -- legacyFloors stores the historical gap captured against the
+        -- repository, not an absolute lifetime total. Add that preserved gap to
+        -- confirmed repository events, while keeping every other known counter
+        -- as a non-destructive minimum.
+        row.wins = math.max(repoEvents + floor, repoEvents, tonumber(row.spyWins) or 0, legacyWins)
+        row.loses = math.max(tonumber(row.loses) or 0, tonumber(row.legacyLoses) or 0)
+        row.time = tonumber(row.time) or 0
+    end
+
+    return out
+end
+
+function Repo:GetStats()
+    local history = EnsureHistory()
+    if not history then return 0, 0 end
+
+    -- PERFORMANCE: RepairLegacyHistory/AddEvent keep history.eventCount
+    -- authoritative.  The old implementation re-walked every event and every
+    -- victim on *each* UI refresh; GankTracker asks for these totals several
+    -- times per second while visible, which produced periodic combat hitches on
+    -- a 2k+ kill repository.  Recount victims only when the event generation
+    -- changes. Explicit /tgank repo diagnostics still have GetRawEventCount().
+    local count = tonumber(history.eventCount) or 0
+    if repoStatsCache.history == history
+        and repoStatsCache.eventCount == count then
+        return count, tonumber(repoStatsCache.victimCount) or 0
+    end
+
+    local victims = 0
+    for _ in pairs(history.victims or {}) do victims = victims + 1 end
+
+    repoStatsCache.history = history
+    repoStatsCache.eventCount = count
+    repoStatsCache.victimCount = victims
+    return count, victims
+end
+
+function Repo:GetLegacyFloorStats()
+    local history = EnsureHistory()
+    if not history or type(history.legacyFloors) ~= "table" then return 0, 0 end
+    CompactLegacyFloors(history)
+
+    local count, totalGap = 0, 0
+    for _, entry in pairs(history.legacyFloors) do
+        if type(entry) == "table" then
+            local gap = LegacyGapFromEntry(entry)
+            if gap > 0 then
+                count = count + 1
+                totalGap = totalGap + gap
+            end
+        end
+    end
+    return count, totalGap
+end
+
+function Repo:GetPeerStatus()
+    local sync = EnsureSyncDB()
+    if not sync then return false, nil, nil end
+    return sync.peerGameAccountID ~= nil, sync.peerGameAccountID, sync.peerName
+end
+
+-- Lightweight status for the tracker UI. Timestamps are server Unix time.
+function Repo:GetSyncStatus()
+    local sync = EnsureSyncDB()
+
+    -- Self-heal only a truly abandoned transaction. Large first-time merges can
+    -- legitimately queue several thousand BNet packets and take many minutes at
+    -- the throttled send rate. Never clear/restart a sync while its outbound
+    -- queue is still draining or while we have seen recent send/receive progress.
+    if sync and sync.syncing then
+        local started = tonumber(sync.syncStartedAt) or 0
+        local now = Now()
+        local queueRemaining = math.max(0, (tonumber(sendTail) or 0) - (tonumber(sendHead) or 1) + 1)
+        local lastActivity = math.max(
+            started,
+            tonumber(sync.lastReceive) or 0,
+            tonumber(sync.lastSendProgress) or 0
+        )
+        local invalidStamp = started <= 0 or started > (now + 300)
+        local abandoned = queueRemaining == 0 and lastActivity > 0 and (now - lastActivity) > 120
+        if invalidStamp or abandoned then
+            sync.syncing = false
+            sync.syncStartedAt = 0
+            sync.bulkReceivePending = nil
+            sync.activeSyncTx = nil
+            sync.verifyRetries = 0
+            wipe(incomingInventories)
+        end
+    end
+
+    if not sync then
+        return {
+            paired = false,
+            pairing = pairing and true or false,
+            autoPair = false,
+        }
+    end
+
+    return {
+        paired = sync.peerGameAccountID ~= nil,
+        pairing = pairing and true or false,
+        autoPair = sync.autoPair ~= false,
+        peerID = sync.peerGameAccountID,
+        peerName = sync.peerName,
+        lastReceive = tonumber(sync.lastReceive) or 0,
+        lastPeerSeen = tonumber(sync.lastPeerSeen) or 0,
+        lastSyncComplete = tonumber(sync.lastSyncComplete) or 0,
+        syncing = sync.syncing and true or false,
+        syncStartedAt = tonumber(sync.syncStartedAt) or 0,
+        lastSyncVerified = tonumber(sync.lastSyncVerified) or 0,
+        lastSyncVerifiedTotal = tonumber(sync.lastSyncVerifiedTotal) or 0,
+        lastSyncVerifiedVictims = tonumber(sync.lastSyncVerifiedVictims) or 0,
+        verifyRetries = tonumber(sync.verifyRetries) or 0,
+        queueRemaining = math.max(0, (tonumber(sendTail) or 0) - (tonumber(sendHead) or 1) + 1),
+    }
+end
+
+-- Return authoritative merged events from the repository for reports/statistics.
+function Repo:GetEventsInRange(startTime, endTime, unsorted)
+    local history = EnsureHistory()
+    local out = {}
+    if not history or type(history.events) ~= "table" then return out end
+
+    local first = tonumber(startTime) or 0
+    local last = tonumber(endTime) or (Now() + 60)
+
+    for _, event in pairs(history.events) do
+        if type(event) == "table" then
+            local eventTime = tonumber(event.t or event.time or event.timestamp) or 0
+            if eventTime >= first and eventTime <= last then
+                out[#out + 1] = event
+            end
+        end
+    end
+
+    -- Reporting screens that need chronological output keep the default sort.
+    -- Aggregate weekly counters do not care about order and can skip an
+    -- O(n log n) sort by passing true as the third argument.
+    if not unsorted then
+        table.sort(out, function(a, b)
+            local at = tonumber(a and (a.t or a.time or a.timestamp)) or 0
+            local bt = tonumber(b and (b.t or b.time or b.timestamp)) or 0
+            if at == bt then return tostring(a and a.id or "") < tostring(b and b.id or "") end
+            return at < bt
+        end)
+    end
+
+    return out
+end
+
+local function NextLocalEventID(sync, history)
+    -- File/recovery merges can restore old event rows without restoring the
+    -- matching nextSeq value. Skip every occupied ID so a fresh kill can never
+    -- silently collide with an older "<node>-<seq>" event.
+    local node = tostring(sync and sync.nodeID or "")
+    if node == "" then return nil end
+
+    local seq = tonumber(sync.nextSeq) or 0
+    local tries = 0
+
+    repeat
+        seq = seq + 1
+        tries = tries + 1
+        local eventID = node .. "-" .. tostring(seq)
+
+        if not history.events[eventID] and not history.seenIDs[eventID] then
+            sync.nextSeq = seq
+            return eventID
+        end
+    until tries >= 100000
+
+    return nil
+end
+
+function Repo:RecordKill(playerName, playerGUID, details)
+    if not playerName or playerName == "" then return 0 end
+
+    -- Final battleground safety gate. GankTracker normally blocks these first,
+    -- but repository writes are protected too in case another caller is added.
+    if VoidMark and VoidMark.ShouldIgnoreBattlegroundStats and VoidMark:ShouldIgnoreBattlegroundStats() then
+        return self:GetHistoricalCount(playerName, playerGUID), false
+    end
+    if IsExplicitNonPlayerGUID(playerGUID) then return 0 end
+
+    -- Final safety net: any caller that bypasses GankTracker still cannot write
+    -- a Hunter Feign Death into the historical repository.
+    if TaliaaGankTracker and TaliaaGankTracker.IsRecentFeign
+        and TaliaaGankTracker:IsRecentFeign(playerName, playerGUID) then
+        return 0, false
+    end
+
+    local sync = EnsureSyncDB()
+    local history = EnsureHistory()
+    if not sync or not history then return 0 end
+
+    -- KILL HOT PATH: ALWAYS use direct indexes for a local kill, even if the
+    -- client has already dropped combat state on the death frame. Previously,
+    -- that tiny timing window could send us through HistoricalCountWithFloor()
+    -- and full alias/legacy scans, producing 50-100+ ms hitches.
+    --
+    -- AddEvent(..., skipHistoricalRecovery=true) queues the deeper identity/
+    -- legacy repair for later, so correctness is preserved without blocking
+    -- the kill frame.
+    local preHistorical, preEventCount = FastHistoricalCount(history, playerName, playerGUID)
+    preHistorical = tonumber(preHistorical) or 0
+
+    local eventID = NextLocalEventID(sync, history)
+    if not eventID then
+        Print("ERROR: could not allocate a unique kill-event ID.")
+        return preHistorical
+    end
+
+    -- Preserve the known missing-kill amount BEFORE appending this death.
+    -- Otherwise a stale/aliased PlayerData cache can leave the UI at the old
+    -- absolute total, or post-combat recovery can absorb this new kill into the
+    -- legacy gap. This uses only the direct indexes already read above.
+    local legacyGap = math.max(0, preHistorical - (tonumber(preEventCount) or 0))
+    local floorKey = VictimKey(playerName, playerGUID)
+    local floor = history.legacyFloors[floorKey]
+    if legacyGap > LegacyGapFromEntry(floor) then
+        floor = type(floor) == "table" and floor or {}
+        floor.name, floor.guid = tostring(playerName), tostring(playerGUID or "")
+        floor.legacyGap, floor.version = legacyGap, 2
+        floor.repoAtCapture, floor.floor = preEventCount, preHistorical
+        floor.capturedAt = Now()
+        history.legacyFloors[floorKey] = floor
+        IndexHistoricalGUID(history, floor)
+        if QueueLegacyFloorToPeer then QueueLegacyFloorToPeer(floor) end
+    end
+
+    details = details or {}
+    local event = {
+        id = eventID,
+        t = Now(),
+        name = tostring(playerName),
+        guid = tostring(playerGUID or ""),
+        zone = tostring(details.zone or GetZoneText() or "Unknown"),
+        subZone = tostring(details.subZone or GetSubZoneText() or ""),
+        level = details.level or "?",
+        class = details.class or "",
+        killer = tostring(details.killer or VMAPI.UnitName("player") or "?"),
+        faction = CurrentFaction(),
+    }
+
+    -- Local GT:RecordKill owns the immediate session/chat update. Skip historical
+    -- recovery inside AddEvent as well so one kill cannot accidentally trigger a
+    -- second full identity walk.
+    local added = AddEvent(event, true, true)
+    if added then
+        QueueEventToPeer(event)
+    end
+
+    return preHistorical + (added and 1 or 0), added and true or false
+end
+
+local function OwnGameAccountID()
+    local guid = VMAPI.UnitGUID("player")
+    if C_BattleNet and C_BattleNet.GetGameAccountInfoByGUID and guid then
+        local vals = {C_BattleNet.GetGameAccountInfoByGUID(guid)}
+        for _, v in ipairs(vals) do
+            if type(v) == "table" then
+                local id = v.gameAccountID or v.gameAccountId or v.id
+                if id then return tonumber(id) end
+            elseif type(v) == "number" then
+                return tonumber(v)
+            end
+        end
+    end
+    return nil
+end
+
+function Repo:SyncNow(silent, force)
+    local sync = EnsureSyncDB()
+    if not sync or sync.enabled == false then
+        if not silent then Print("Account sync is disabled.") end
+        return false
+    end
+
+    local peerID = tonumber(sync.peerGameAccountID)
+    if not peerID or not sync.peerSessionToken or sync.peerSessionToken == "" then
+        if not silent then Print("No external peer account connected. Use /tgank pair while both WoW accounts are online.") end
+        return false
+    end
+
+    if sync.syncing and not force then
+        if not silent then
+            Print("Sync is already in progress. Wait for SYNC COMPLETE.")
+        end
+        return false
+    end
+
+    local now = Now()
+    if silent and not force and (now - (tonumber(sync.lastSyncAttempt) or 0)) < 20 then
+        return true
+    end
+
+    local tx = tostring(sync.nodeID or "node")
+        .. "-" .. tostring(now)
+        .. "-" .. tostring(math.random(1000, 9999))
+
+    sync.bulkReceivePending = true
+    sync.syncing = true
+    sync.syncStartedAt = now
+    sync.activeSyncTx = tx
+    if not force then
+        sync.verifyRetries = 0
+    end
+
+    sync.lastSyncAttempt = now
+
+    if not silent then
+        Print("Fast sync started: building repository inventory in small batches.")
+    end
+
+    QueueInventoryAsync(peerID, tx, true, function(killIDs, dhkIDs)
+        local s = EnsureSyncDB()
+        if s then s.lastSendProgress = Now() end
+        if not silent then
+            Print("Inventory queued: comparing "
+                .. tostring(killIDs) .. " kill IDs + "
+                .. tostring(dhkIDs) .. " DHK IDs with peer.")
+        end
+    end)
+
+    return true
+end
+
+-- Debug/fallback only. Normal Sync no longer sends the whole 2k+ repository.
+function Repo:FullSyncNow(silent)
+    local sync = EnsureSyncDB()
+    local peerID = sync and tonumber(sync.peerGameAccountID) or nil
+    if not sync or sync.enabled == false or not peerID
+        or not sync.peerSessionToken or sync.peerSessionToken == "" then
+        if not silent then Print("No external peer account connected.") end
+        return false
+    end
+
+    sync.bulkReceivePending = true
+    local kills, dhks = QueueAllEvents(peerID)
+    sync.lastSyncAttempt = Now()
+    if not silent then
+        Print("FULL sync queued: " .. tostring(kills) .. " kills + "
+            .. tostring(dhks) .. " DHKs -> peer.")
+    end
+    return true
+end
+
+-- Return currently-online WoW game accounts from Battle.net friends.
+-- We keep the BattleTag alongside the gameAccountID so the same external
+-- Battle.net account can be rediscovered even when it changes characters.
+local function DiscoverOnlineWoWGameAccounts(preferredBattleTag)
+    local out = {}
+    local seen = {}
+    local wowClient = BNET_CLIENT_WOW or "WoW"
+    local ownID = OwnGameAccountID()
+    local preferred = tostring(preferredBattleTag or ""):lower()
+
+    local function Add(id, characterName, battleTag)
+        id = tonumber(id)
+        if not id or id <= 0 or (ownID and id == ownID) or seen[id] then return end
+
+        local tag = tostring(battleTag or "")
+        if preferred ~= "" and tag ~= "" and tag:lower() ~= preferred then
+            return
+        end
+
+        seen[id] = true
+        out[#out + 1] = {
+            id = id,
+            characterName = tostring(characterName or ""),
+            battleTag = tag,
+        }
+    end
+
+    if not BNGetNumFriends then return out end
+
+    for i = 1, (BNGetNumFriends() or 0) do
+        local modernInfo = nil
+        local modernTag = ""
+
+        if C_BattleNet and C_BattleNet.GetFriendAccountInfo then
+            modernInfo = C_BattleNet.GetFriendAccountInfo(i)
+            modernTag = modernInfo and tostring(modernInfo.battleTag or "") or ""
+
+            local ga = modernInfo and modernInfo.gameAccountInfo
+            if ga and ga.isOnline and ga.gameAccountID
+                and (ga.clientProgram == "WoW" or ga.clientProgram == wowClient) then
+                Add(ga.gameAccountID, ga.characterName, modernTag)
+            end
+
+            if C_BattleNet.GetFriendNumGameAccounts and C_BattleNet.GetFriendGameAccountInfo then
+                for j = 1, (C_BattleNet.GetFriendNumGameAccounts(i) or 0) do
+                    local g = C_BattleNet.GetFriendGameAccountInfo(i, j)
+                    if g and g.isOnline and g.gameAccountID
+                        and (g.clientProgram == "WoW" or g.clientProgram == wowClient) then
+                        Add(g.gameAccountID, g.characterName, modernTag)
+                    end
+                end
+            end
+        end
+
+        -- Classic Era legacy API fallback.
+        if BNGetFriendInfo then
+            local _, _, battleTag, _, _, gameAccountID, client, isOnline = BNGetFriendInfo(i)
+            local legacyTag = tostring(battleTag or modernTag or "")
+
+            if isOnline and gameAccountID
+                and (client == "WoW" or client == wowClient) then
+                Add(gameAccountID, "", legacyTag)
+            end
+
+            if BNGetNumFriendGameAccounts and BNGetFriendGameAccountInfo then
+                for j = 1, (BNGetNumFriendGameAccounts(i) or 0) do
+                    local _, characterName, clientProg, _, _, _, _, _, _, _, _, _, _, _, gaOnline, gaID =
+                        BNGetFriendGameAccountInfo(i, j)
+                    if gaOnline and gaID and (clientProg == "WoW" or clientProg == wowClient) then
+                        Add(gaID, characterName, legacyTag)
+                    end
+                end
+            end
+        end
+    end
+
+    return out
+end
+
+local function ResolvePeerGameAccountID(reportedID, expectedCharacter)
+    local expected = NormalizePlayerName(expectedCharacter)
+    local sync = EnsureSyncDB()
+    local preferredTag = sync and sync.peerBattleTag or nil
+
+    -- First trust the event-reported ID only when the API confirms it belongs
+    -- to the character named inside the repository handshake.
+    local reported = tonumber(reportedID)
+    if reported and C_BattleNet and C_BattleNet.GetGameAccountInfoByID then
+        local info = C_BattleNet.GetGameAccountInfoByID(reported)
+        if info and info.gameAccountID and info.isOnline then
+            local have = NormalizePlayerName(info.characterName)
+            if expected == "" or have == expected then
+                local ownID = OwnGameAccountID()
+                if not ownID or tonumber(info.gameAccountID) ~= tonumber(ownID) then
+                    return tonumber(info.gameAccountID), tostring(info.characterName or expectedCharacter or ""), preferredTag
+                end
+            end
+        end
+    end
+
+    -- If Classic's BN_CHAT_MSG_ADDON layout reports an unexpected numeric ID,
+    -- resolve the real gameAccountID by the remote character name from the
+    -- payload. This is what prevents Taliaa from pairing to Taliaa and Aloha
+    -- from pairing to Aloha.
+    local candidates = DiscoverOnlineWoWGameAccounts(preferredTag)
+    if #candidates == 0 and preferredTag and preferredTag ~= "" then
+        candidates = DiscoverOnlineWoWGameAccounts(nil)
+    end
+
+    for _, candidate in ipairs(candidates) do
+        if expected ~= "" and NormalizePlayerName(candidate.characterName) == expected then
+            return candidate.id, candidate.characterName, candidate.battleTag
+        end
+    end
+
+    -- Last chance: if exactly one external WoW friend is online, it is the peer.
+    if #candidates == 1 then
+        local c = candidates[1]
+        return c.id, c.characterName ~= "" and c.characterName or expectedCharacter, c.battleTag
+    end
+
+    return nil, nil, nil
+end
+
+local function FinishPair(peerID, peerName, peerNode, peerSessionToken, payloadPeerID)
+    local sync = EnsureSyncDB()
+    if not sync then return end
+    if NormalizePlayerName(peerName) == NormalizePlayerName(VMAPI.UnitName("player")) then return end
+
+    if not peerSessionToken or peerSessionToken == "" then return end
+    if tostring(peerSessionToken) == tostring(EnsureLocalSessionToken()) then return end
+
+    -- On this Classic Era client, the two WoW licenses can be reachable by
+    -- current-session gameAccountID even when they do not appear as Battle.net
+    -- friends.  The old working repository paired IDs such as 3 and 4 directly.
+    -- Trust the live BN_CHAT_MSG_ADDON sender ID after the nonce/session-token
+    -- handshake proves it is a different loaded repository.
+    local id = tonumber(payloadPeerID) or tonumber(peerID)
+    local ownID = OwnGameAccountID()
+    if ownID and id == ownID then return end
+
+    local resolvedName, battleTag
+    if not id then
+        id, resolvedName, battleTag = ResolvePeerGameAccountID(peerID, peerName)
+    else
+        local resolvedID
+        resolvedID, resolvedName, battleTag = ResolvePeerGameAccountID(peerID, peerName)
+        if resolvedID then id = resolvedID end
+    end
+    if not id then return end
+
+    pairing = false
+    sync.peerGameAccountID = id
+    -- Remember the last working current-session ID as a fast probe hint.
+    -- It is never trusted as permanent; every login still renegotiates.
+    sync.lastKnownPeerGameAccountID = id
+    sync.peerName = (resolvedName and resolvedName ~= "") and resolvedName or peerName or sync.peerName
+    sync.peerBattleTag = (battleTag and battleTag ~= "") and battleTag or sync.peerBattleTag
+    sync.peerSessionToken = tostring(peerSessionToken)
+    sync.lastPeerSeen = Now()
+
+    Print("Paired to external account via " .. tostring(sync.peerName or "other character")
+        .. " (BNet game ID " .. tostring(id) .. ").")
+    -- Pairing only establishes the live peer. Do NOT start a repository
+    -- reconciliation here. Full repository sync is manual-only so simultaneous
+    -- pair handshakes on both clients cannot create competing sync sessions.
+end
+
+local function SendPairProbe(id)
+    if not pairing or not pairNonce then return end
+    local payload = table.concat({
+        "P",
+        pairNonce,
+        CleanField(VMAPI.UnitName("player") or "?"),
+        CleanField((EnsureSyncDB() or {}).nodeID or ""),
+        CleanField(EnsureLocalSessionToken()),
+        tostring(OwnGameAccountID() or ""),
+    }, SEP)
+    SendBN(id, payload)
+end
+
+function Repo:StartPairing(silent)
+    if pairing then
+        if not silent then Print("Pairing is already running.") end
+        return false
+    end
+
+    local sync = EnsureSyncDB()
+    pairNonce = tostring(Now()) .. "-" .. tostring(math.random(10000, 99999))
+    pairing = true
+    pairingSilent = silent and true or false
+    if not silent then Print("Searching for Aloha's external WoW account.") end
+
+    -- Probe any visible Battle.net-friend game accounts first.
+    local candidates = DiscoverOnlineWoWGameAccounts(sync and sync.peerBattleTag or nil)
+    if #candidates == 0 and sync and sync.peerBattleTag and sync.peerBattleTag ~= "" then
+        candidates = DiscoverOnlineWoWGameAccounts(nil)
+    end
+
+    local sent = {}
+    local ownID = OwnGameAccountID()
+    local function Probe(id)
+        id = tonumber(id)
+        if not id or id <= 0 or sent[id] or (ownID and id == ownID) then return end
+        sent[id] = true
+        SendPairProbe(id)
+    end
+
+    -- Fast path: probe the last ID that successfully paired before doing the
+    -- wider scan. If Blizzard reassigned it, the session-token/name checks
+    -- reject it and discovery continues normally.
+    if sync and sync.lastKnownPeerGameAccountID then
+        Probe(sync.lastKnownPeerGameAccountID)
+    end
+
+    for _, candidate in ipairs(candidates) do
+        Probe(candidate.id)
+    end
+
+    -- Critical Classic-Era fallback: gameAccountIDs are temporary and have now
+    -- been observed moving from low values (3/4) to values such as 57. They are
+    -- not always enumerable through the Battle.net friends API, so scan a wider
+    -- bounded range. Session-token/name checks prevent self-pairing.
+    local nextID = 1
+    local function DirectPairStep()
+        if not pairing then return end
+        while nextID <= DIRECT_PAIR_MAX_ID do
+            local id = nextID
+            nextID = nextID + 1
+            if not sent[id] and (not ownID or id ~= ownID) then
+                Probe(id)
+                C_Timer.After(DIRECT_PAIR_STEP_DELAY, DirectPairStep)
+                return
+            end
+        end
+    end
+    DirectPairStep()
+
+    -- 100 IDs at 0.08 seconds is about 8 seconds. Leave extra margin for
+    -- BNet throttling and delayed addon-message delivery.
+    C_Timer.After(14, function()
+        if pairing then
+            pairing = false
+            if not pairingSilent then
+                Print("Pair probe timed out after scanning BNet IDs 1-" .. tostring(DIRECT_PAIR_MAX_ID) .. ". Keep Aloha and Taliaa/Ganktastic online, then /tgank pair again.")
+            end
+        end
+    end)
+    return true
+end
+
+function Repo:GetBuild()
+    return VOIDMARK_REPO_BUILD
+end
+
+function Repo:RebuildIndexes()
+    local importedRecovery = select(1, ImportRecoveryLedger()) or 0
+    local importedLegacy = ImportLegacyFactionEvents() or 0
+    local removedEvents = select(1, PurgeExplicitNonPlayerHistory()) or 0
+    local total, recovered = RepairLegacyHistory()
+    return tonumber(total) or 0,
+           (tonumber(recovered) or 0) + (tonumber(importedRecovery) or 0)
+           + (tonumber(importedLegacy) or 0) + tonumber(removedEvents)
+end
+
+function Repo:Unpair()
+    local sync = EnsureSyncDB()
+    if not sync then return end
+    sync.peerGameAccountID = nil
+    sync.peerName = nil
+    sync.peerBattleTag = nil
+    sync.peerSessionToken = nil
+    wipe(sendQueue)
+    sendHead = 1
+    sendTail = 0
+    Print("Gank repository account pairing cleared.")
+end
+
+function Repo:PrintStatus(playerName)
+    local total, victims = self:GetStats()
+    local paired, peerID, peerName = self:GetPeerStatus()
+
+    if playerName and playerName ~= "" then
+        local count = self:GetHistoricalCount(playerName, nil)
+        Print(tostring(playerName) .. ": " .. tostring(count) .. " historical ganks.")
+        return
+    end
+
+    Print("Repository: " .. tostring(total) .. " historical kills | " .. tostring(victims) .. " victims.")
+
+    local history = EnsureHistory()
+    local byKiller = {}
+    for _, event in pairs(history and history.events or {}) do
+        local killer = tostring(event and event.killer or "")
+        if killer == "" then killer = "Unknown" end
+        byKiller[killer] = (byKiller[killer] or 0) + 1
+    end
+    local parts = {}
+    for killer, count in pairs(byKiller) do
+        parts[#parts + 1] = tostring(killer) .. " " .. tostring(count)
+    end
+    table.sort(parts)
+    if #parts > 0 then Print("By character: " .. table.concat(parts, " | ")) end
+
+    if paired then
+        Print("Peer account: connected via " .. tostring(peerName or "paired character") .. " (current-session ID " .. tostring(peerID) .. ").")
+    else
+        Print("Peer account: not connected. Auto-pair is " .. ((EnsureSyncDB().autoPair ~= false) and "ON" or "OFF") .. ".")
+    end
+end
+
+local function ReplyPair(senderID, nonce, senderName, senderNode, senderSessionToken, payloadSenderID)
+    local sync = EnsureSyncDB()
+    if not sync or not nonce or nonce == "" then return end
+    if NormalizePlayerName(senderName) == NormalizePlayerName(VMAPI.UnitName("player")) then return end
+    if not senderSessionToken or senderSessionToken == "" then return end
+    if tostring(senderSessionToken) == tostring(EnsureLocalSessionToken()) then return end
+
+    -- Accept the live sender ID directly after validating that the probe came
+    -- from a different character/session token.  This supports a second WoW
+    -- license that is reachable through BNet game data but not listed as a
+    -- Battle.net friend.
+    local id = tonumber(payloadSenderID) or tonumber(senderID)
+    local ownID = OwnGameAccountID()
+    if ownID and id == ownID then return end
+
+    local resolvedName, battleTag
+    if id then
+        local resolvedID
+        resolvedID, resolvedName, battleTag = ResolvePeerGameAccountID(senderID, senderName)
+        if resolvedID then id = resolvedID end
+    else
+        id, resolvedName, battleTag = ResolvePeerGameAccountID(senderID, senderName)
+    end
+    if not id then return end
+
+    -- The external account initiating the scan becomes this account's peer.
+    sync.peerGameAccountID = id
+    sync.lastKnownPeerGameAccountID = id
+    sync.peerName = (resolvedName and resolvedName ~= "") and resolvedName or senderName or sync.peerName or "paired account"
+    sync.peerBattleTag = (battleTag and battleTag ~= "") and battleTag or sync.peerBattleTag
+    sync.peerSessionToken = tostring(senderSessionToken)
+    sync.lastPeerSeen = Now()
+
+    -- Pair ACK is sent immediately so it cannot sit behind a large history sync queue.
+    SendBN(id, table.concat({
+        "A",
+        nonce,
+        CleanField(VMAPI.UnitName("player") or "?"),
+        CleanField(sync.nodeID or ""),
+        CleanField(EnsureLocalSessionToken()),
+        tostring(OwnGameAccountID() or ""),
+    }, SEP))
+    -- Responder also stops at paired state. Live newly-recorded events can still
+    -- flow normally; historical reconciliation begins only from SYNC NOW.
+end
+
+local function HandlePayload(payload, senderID)
+    local parts = SplitPayload(payload)
+    local kind = parts[1]
+    local sync = EnsureSyncDB()
+    if not sync then return end
+
+    if kind == "P" then
+        ReplyPair(senderID, parts[2], parts[3], parts[4], parts[5], parts[6])
+        return
+    end
+
+    if kind == "A" then
+        if pairing and parts[2] == pairNonce then
+            FinishPair(senderID, parts[3], parts[4], parts[5], parts[6])
+        end
+        return
+    end
+
+    -- TGANK2 authenticates the live peer with a per-login session token.
+    -- This avoids relying on the ambiguous numeric position returned by some
+    -- Classic Era BN_CHAT_MSG_ADDON builds after pairing is complete.
+    local peerToken = tostring(sync.peerSessionToken or "")
+    local messageToken = tostring(parts[2] or "")
+    if peerToken == "" or messageToken == "" or messageToken ~= peerToken then
+        return
+    end
+
+    sync.lastPeerSeen = Now()
+    sync.lastReceive = sync.lastPeerSeen
+
+    if kind == "I" then
+        RememberInventoryChunk(parts)
+        return
+    end
+
+    if kind == "J" then
+        local tx = tostring(parts[3] or "")
+        local requestReply = tostring(parts[4] or "0") == "1"
+        local slot = incomingInventories[tx] or { kills = {}, dhks = {} }
+        incomingInventories[tx] = nil
+
+        if requestReply then
+            sync.syncing = true
+            sync.syncStartedAt = Now()
+            sync.activeSyncTx = tx
+        end
+
+        -- requestReply=true is the first leg: send what the initiator is missing.
+        -- requestReply=false is the return/final leg: once its D packet is received,
+        -- the peer can ACK that BOTH directions are finished.
+        --
+        -- Both the repository comparison and the return inventory are now built
+        -- across frames so a large account sync cannot monopolize the Lua thread.
+        QueueMissingEventsAsync(
+            sync.peerGameAccountID,
+            slot.kills,
+            slot.dhks,
+            tx,
+            not requestReply,
+            function()
+                local s = EnsureSyncDB()
+                if s then s.lastSendProgress = Now() end
+
+                if requestReply then
+                    s.bulkReceivePending = true
+                    QueueInventoryAsync(s.peerGameAccountID, tx .. "-r", false, function()
+                        local s2 = EnsureSyncDB()
+                        if s2 then s2.lastSendProgress = Now() end
+                    end)
+                end
+            end
+        )
+        return
+    end
+
+    if kind == "Q" then
+        QueueAllEvents(sync.peerGameAccountID)
+        return
+    end
+
+    if kind == "F" then
+        local floor = DecodeLegacyFloor(parts)
+        if not floor then return end
+        local history = EnsureHistory()
+        local _, changed = MergeLegacyGap(
+            history, floor.name, floor.guid, floor.legacyGap, true
+        )
+        if changed then
+            sync.lastReceive = Now()
+            if not sync.bulkReceivePending and TaliaaGankTracker
+                and TaliaaGankTracker.OnHistoryUpdated then
+                TaliaaGankTracker:OnHistoryUpdated(floor.name, floor.guid, 0)
+            end
+        end
+        return
+    end
+
+    if kind == "E" then
+        local event = DecodeEvent(parts)
+        if not event then return end
+
+        local isBulk = sync.bulkReceivePending and true or false
+        local added = AddEvent(event, isBulk, isBulk)
+        if added then sync.lastReceive = Now() end
+        return
+    end
+
+    if kind == "H" then
+        local event = DecodeDHKEvent(parts)
+        if not event then return end
+
+        local added = AddDHKEvent(event, sync.bulkReceivePending and true or false)
+        if added then sync.lastReceive = Now() end
+        return
+    end
+
+    if kind == "D" then
+        sync.lastSyncComplete = Now()
+        local wasBulk = sync.bulkReceivePending
+        sync.bulkReceivePending = nil
+
+        local tx = tostring(parts[3] or "")
+        local finalLeg = tostring(parts[4] or "0") == "1"
+
+        if wasBulk and TaliaaGankTracker then
+            if TaliaaGankTracker.OnHistoryUpdated then
+                TaliaaGankTracker:OnHistoryUpdated(nil, nil, 0)
+            end
+            if TaliaaGankTracker.OnDHKHistoryUpdated then
+                TaliaaGankTracker:OnDHKHistoryUpdated()
+            end
+        end
+
+        if finalLeg then
+            -- We just received the LAST missing rows from the initiating account.
+            -- Send a completion ACK containing our final repository totals.
+            local total, victims = Repo:GetStats()
+            local floorCount, floorGap = Repo:GetLegacyFloorStats()
+            sync.syncing = false
+            sync.lastSyncVerified = Now()
+            sync.lastSyncVerifiedTotal = tonumber(total) or 0
+            sync.lastSyncVerifiedVictims = tonumber(victims) or 0
+            sync.lastSyncVerifiedFloors = tonumber(floorCount) or 0
+            sync.lastSyncVerifiedLegacyGap = tonumber(floorGap) or 0
+
+            QueuePayload(sync.peerGameAccountID, table.concat({
+                "C",
+                CleanField(EnsureLocalSessionToken()),
+                CleanField(tx),
+                tostring(tonumber(total) or 0),
+                tostring(tonumber(victims) or 0),
+                tostring(tonumber(floorCount) or 0),
+                tostring(tonumber(floorGap) or 0),
+            }, SEP))
+
+            Print("SYNC COMPLETE: "
+                .. tostring(tonumber(total) or 0) .. " kills / "
+                .. tostring(tonumber(victims) or 0) .. " marks / "
+                .. tostring(tonumber(floorCount) or 0) .. " historical floors.")
+        end
+        return
+    end
+
+    if kind == "C" then
+        -- End-to-end ACK from the peer after it received the final return leg.
+        local peerTotal = tonumber(parts[4]) or 0
+        local peerVictims = tonumber(parts[5]) or 0
+        local peerFloors = tonumber(parts[6]) or 0
+        local peerGap = tonumber(parts[7]) or 0
+        local myTotal, myVictims = Repo:GetStats()
+        local myFloors, myGap = Repo:GetLegacyFloorStats()
+        myTotal = tonumber(myTotal) or 0
+        myVictims = tonumber(myVictims) or 0
+        myFloors = tonumber(myFloors) or 0
+        myGap = tonumber(myGap) or 0
+
+        if myTotal == peerTotal and myVictims == peerVictims
+            and myFloors == peerFloors and myGap == peerGap then
+            sync.syncing = false
+            sync.lastSyncVerified = Now()
+            sync.lastSyncVerifiedTotal = myTotal
+            sync.lastSyncVerifiedVictims = myVictims
+            sync.lastSyncVerifiedFloors = myFloors
+            sync.lastSyncVerifiedLegacyGap = myGap
+            sync.verifyRetries = 0
+
+            Print("SYNC COMPLETE: both accounts match at "
+                .. tostring(myTotal) .. " kills / "
+                .. tostring(myVictims) .. " marks / "
+                .. tostring(myFloors) .. " historical floors.")
+        else
+            -- v9.4: Never launch another full comparison pass automatically from
+            -- verification. A mismatch can be a small tail difference or a packet
+            -- that arrived just after the peer calculated its ACK. Re-entering
+            -- SyncNow here stacked new inventory/event traffic on the old session
+            -- and created the visible SYNCING/queue loop. Finish this transaction
+            -- cleanly and let the user choose when to run the next reconciliation.
+            sync.syncing = false
+            sync.bulkReceivePending = nil
+            sync.activeSyncTx = nil
+            sync.verifyRetries = 0
+            Print("SYNC INCOMPLETE: pass finished but history still differs (kills "
+                .. tostring(myTotal) .. "/" .. tostring(peerTotal)
+                .. ", floors " .. tostring(myFloors) .. "/" .. tostring(peerFloors)
+                .. ", gap " .. tostring(myGap) .. "/" .. tostring(peerGap)
+                .. "). Press SYNC NOW once to reconcile the remaining difference.")
+        end
+        return
+    end
+end
+
+local function AutoConnectAndSync()
+    -- v9.4: Auto-connect may discover/refresh the peer, but it must NEVER start
+    -- a full repository reconciliation. SYNC NOW is the sole entry point for a
+    -- historical sync transaction. This prevents BN friend-state changes, login
+    -- timers, and simultaneous pair handshakes from spawning overlapping passes.
+    local sync = EnsureSyncDB()
+    if not sync or sync.enabled == false then return end
+
+    if not sync.peerGameAccountID and sync.autoPair ~= false and not pairing then
+        Repo:StartPairing(true)
+        C_Timer.After(AUTO_PAIR_RETRY, function()
+            local s = EnsureSyncDB()
+            if s and not s.peerGameAccountID and s.autoPair ~= false and not pairing then
+                Repo:StartPairing(true)
+            end
+        end)
+    end
+end
+
+VoidMarkForever.RegisterEvent(frame,"PLAYER_LOGIN")
+VoidMarkForever.RegisterEvent(frame,"BN_CHAT_MSG_ADDON")
+VoidMarkForever.RegisterEvent(frame,"BN_FRIEND_INFO_CHANGED")
+
+frame:SetScript("OnEvent", function(_, event, ...)
+    if event == "PLAYER_LOGIN" then
+        local loginSync = EnsureSyncDB()
+        EnsureHistory()
+        EnsureDHKHistory()
+        RepairDHKHistory()
+
+        -- TGANK2 always renegotiates the live gameAccountID/session token on
+        -- login or /reload. Keep peerBattleTag/peerName as rediscovery hints,
+        -- but never trust a stale ID from the old self-pairing builds.
+        EnsureLocalSessionToken()
+        if loginSync then
+            -- A live sync transaction cannot survive a reload/login. These fields
+            -- are SavedVariables, so an interrupted sync used to come back after
+            -- login as (for example) "SYNCING 1797777s" and keep SYNC NOW
+            -- disabled. Always discard transient transaction state here; the
+            -- repository itself is preserved and the normal auto-sync below will
+            -- negotiate a fresh comparison with the peer.
+            loginSync.syncing = false
+            loginSync.syncStartedAt = 0
+            loginSync.bulkReceivePending = nil
+            loginSync.activeSyncTx = nil
+            loginSync.verifyRetries = 0
+            loginSync.lastSyncAttempt = 0
+
+            loginSync.peerGameAccountID = nil
+            loginSync.peerSessionToken = nil
+            wipe(incomingInventories)
+        end
+
+        if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
+            C_ChatInfo.RegisterAddonMessagePrefix(PREFIX)
+        elseif RegisterAddonMessagePrefix then
+            RegisterAddonMessagePrefix(PREFIX)
+        end
+
+        -- Import the external recovery ledger first, then legacy faction histories,
+        -- then rebuild indexes from the authoritative event rows.
+        local importedRecovery, recoveryCount, recoveryUnresolved = ImportRecoveryLedger()
+        local importedLegacy = ImportLegacyFactionEvents()
+        local importedLegacyDHK = ImportLegacyDHKHistory()
+        local removedNonPlayerEvents, removedNonPlayerVictims = PurgeExplicitNonPlayerHistory()
+        local total, recovered = RepairLegacyHistory()
+        local imported = (tonumber(importedRecovery) or 0) + (tonumber(importedLegacy) or 0)
+
+        if (tonumber(importedLegacyDHK) or 0) > 0 then
+            Print("Imported " .. tostring(importedLegacyDHK)
+                .. " legacy DHK event" .. (importedLegacyDHK == 1 and "." or "s."))
+        end
+
+        if (tonumber(removedNonPlayerEvents) or 0) > 0 or (tonumber(removedNonPlayerVictims) or 0) > 0 then
+            Print("Removed " .. tostring(tonumber(removedNonPlayerEvents) or 0)
+                .. " pet/NPC kill events from Gank History.")
+        end
+
+        if imported > 0 or recovered > 0 then
+            Print("Imported/repaired " .. tostring(imported + recovered)
+                .. " kill events (" .. tostring(total) .. " local total).")
+        end
+        if (tonumber(recoveryCount) or 0) > 0 then
+            Print("Recovery ledger: " .. tostring(recoveryCount)
+                .. " timestamped events"
+                .. ((tonumber(recoveryUnresolved) or 0) > 0
+                    and (" + " .. tostring(recoveryUnresolved) .. " legacy kills without timestamps")
+                    or "")
+                .. ".")
+        end
+        if TaliaaGankTracker and TaliaaGankTracker.OnHistoryUpdated then
+            TaliaaGankTracker:OnHistoryUpdated(nil, nil, 0)
+        end
+
+        -- Build the special-character/GUID VoidMark lookup once, outside combat. Keep
+        -- retrying quietly if the player logs/reloads directly into combat.
+        local function BuildVoidMarkIndexWhenSafe()
+            if not RebuildVoidMarkFastIndex() then
+                C_Timer.After(2.0, BuildVoidMarkIndexWhenSafe)
+            else
+                RebuildHistoricalGUIDIndex(EnsureHistory())
+                EnsureLegacyVoidMarkLookup()
+            end
+        end
+        C_Timer.After(1.0, BuildVoidMarkIndexWhenSafe)
+
+        -- BNet game-account IDs are temporary for the current Battle.net session,
+        -- so refresh the peer every login/reload instead of trusting an old ID.
+        C_Timer.After(2, function()
+            local s = EnsureSyncDB()
+            if s and s.enabled ~= false and s.autoPair ~= false then Repo:StartPairing(true) end
+        end)
+        C_Timer.After(8, AutoConnectAndSync)
+        return
+    end
+
+    if event == "BN_CHAT_MSG_ADDON" then
+        local args = {...}
+        local prefix = args[1]
+        local payload = args[2]
+        local senderID = ExtractBNetSenderID(...)
+
+        if prefix == PREFIX and payload then
+            HandlePayload(payload, senderID)
+        end
+        return
+    end
+
+    if event == "BN_FRIEND_INFO_CHANGED" then
+        local sync = EnsureSyncDB()
+        if sync then
+            local now = Now()
+            if now - (tonumber(sync.lastFriendAutoSync) or 0) >= 30 then
+                sync.lastFriendAutoSync = now
+                C_Timer.After(1, AutoConnectAndSync)
+            end
+        end
+    end
+end)
+
+frame:SetScript("OnUpdate", function(_, elapsed)
+    local inCombat = InCombatNow()
+    local now = GetTime and GetTime() or 0
+
+    if repositoryWasInCombat and not inCombat then
+        -- Give the client breathing room after combat. Deep identity/history
+        -- recovery is maintenance work, not kill-critical work, so keep it well
+        -- away from the kill/dismount/target-change burst.
+        deferredHistoricalNotBefore = now + 3.00
+        syncSendNotBefore = now + 0.50
+    end
+    repositoryWasInCombat = inCombat
+
+    -- Recover only when a transaction is genuinely idle. A big repository merge
+    -- may spend many minutes draining thousands of queued event packets. The old
+    -- fixed 45-second timeout restarted SyncNow on top of that live queue, causing
+    -- the queue to grow into a loop. Progress (send or receive) keeps it alive.
+    local sync = EnsureSyncDB()
+    if sync and sync.syncing then
+        local serverNow = Now()
+        local started = tonumber(sync.syncStartedAt) or 0
+        local queueRemaining = math.max(0, (tonumber(sendTail) or 0) - (tonumber(sendHead) or 1) + 1)
+        local lastActivity = math.max(
+            started,
+            tonumber(sync.lastReceive) or 0,
+            tonumber(sync.lastSendProgress) or 0
+        )
+        if queueRemaining == 0 and lastActivity > 0 and (serverNow - lastActivity) >= 120 then
+            -- v9.4: Fail closed instead of recursively starting another sync.
+            -- This guarantees one button press creates at most one sync session.
+            sync.syncing = false
+            sync.bulkReceivePending = nil
+            sync.activeSyncTx = nil
+            sync.verifyRetries = 0
+            wipe(incomingInventories)
+            Print("SYNC STALLED: no queued traffic for 120s. Press SYNC NOW to try again.")
+        end
+    end
+
+    -- v9.0: Never call Battle.net SendGameData while the player is in combat.
+    -- A local kill is already safely written to SavedVariables immediately; the
+    -- peer receives queued rows after combat instead of stealing time on/near the
+    -- death frame.
+    if not inCombat and now >= (tonumber(syncSendNotBefore) or 0) then
+        if sendHead <= sendTail then
+            sendElapsed = sendElapsed + elapsed
+            if sendElapsed >= SEND_INTERVAL then
+                sendElapsed = 0
+                local item = sendQueue[sendHead]
+                if item then
+                    if SendBN(item.id, item.payload) then
+                        sendQueue[sendHead] = nil
+                        sendHead = sendHead + 1
+                        local progressSync = EnsureSyncDB()
+                        if progressSync then progressSync.lastSendProgress = Now() end
+                    else
+                        -- Do not silently discard a packet Blizzard rejected.
+                        -- Retry the same queue entry a few times before giving up.
+                        item.retries = (tonumber(item.retries) or 0) + 1
+                        if item.retries >= 6 then
+                            sendQueue[sendHead] = nil
+                            sendHead = sendHead + 1
+                            Print("Sync packet failed after 6 attempts; the current sync will be retried.")
+                            local sync = EnsureSyncDB()
+                            if sync then
+                                sync.syncing = false
+                                sync.bulkReceivePending = nil
+                            end
+                        else
+                            syncSendNotBefore = now + 0.25
+                        end
+                    end
+                else
+                    sendHead = sendHead + 1
+                end
+            end
+        elseif sendTail ~= 0 then
+            wipe(sendQueue)
+            sendHead = 1
+            sendTail = 0
+            sendElapsed = 0
+        end
+    end
+
+    -- Deep historical/accent recovery is intentionally post-combat. Give the
+    -- client a short grace period after combat drops, then process at most one
+    -- victim every 0.10s so recovery can never land on the kill frame itself.
+    if deferredHistoricalHead <= deferredHistoricalTail
+        and not inCombat
+        and now >= (tonumber(deferredHistoricalNotBefore) or 0) then
+        deferredHistoricalElapsed = deferredHistoricalElapsed + elapsed
+        if deferredHistoricalElapsed >= 0.25 then
+            deferredHistoricalElapsed = 0
+            ProcessOneDeferredHistoricalRecovery()
+        end
+    else
+        deferredHistoricalElapsed = 0
+    end
+end)

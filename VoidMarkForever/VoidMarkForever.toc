@@ -1,0 +1,59 @@
+## Interface: 16001
+## Title: VoidMark
+## Version: 1.0.0
+## Notes: VoidMark compact Shadow Priest WPvP intelligence and encounter tracking.
+## Creator: Taliaa
+## Author: Taliaa
+
+## OptionalDeps: Ace3, LibSharedMedia-3.0
+## SavedVariables: VoidMarkDB, TaliaaRunBackDB, TaliaaTauntDB, TaliaaBoatsDB
+## SavedVariablesPerCharacter: TaliaaRunBackCharDB, TRD_DB
+
+#@no-lib-strip@
+Embeds.xml
+Compat\Forever.lua
+#@end-no-lib-strip@
+
+VoidMark.xml
+
+Locales\VoidMark-enUS.lua
+
+VoidMark.lua
+Fonts.lua
+Colors.lua
+Widgets.lua
+WindowOrder.lua
+MainWindow.lua
+List.lua
+VoidMarkStats.xml
+VoidMarkData.lua
+GankRepository.lua
+KillEffects.lua
+GankTracker.lua
+Modules\PanicArt.lua
+
+# Integrated corpse-run engine
+RunBack\Core.lua
+RunBack\Data\Areas.lua
+RunBack\Data\Graveyards.lua
+RunBack\Data\Network.lua
+RunBack\Areas.lua
+RunBack\Graveyards.lua
+RunBack\Routing.lua
+RunBack\Timers.lua
+RunBack\CombatLog.lua
+RunBack\UI.lua
+RunBack\Diagnostics.lua
+RunBackIntegration.lua
+
+# Integrated utility modules
+Modules\TaliaaTaunt.lua
+Modules\TaliaaBoats.lua
+Modules\RideOrDie.lua
+Modules\DamageRecords.lua
+Modules\EnemyMoves.lua
+VoidMarkUI.lua
+Modules\MinimapButton.lua
+MCMarks.lua
+Compat\Detection.lua
+Compat\Events.lua
