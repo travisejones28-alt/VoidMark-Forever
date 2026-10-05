@@ -4373,8 +4373,15 @@ end
 local IsKnownHunter
 function GT:ShouldSuppressHunterUnitDied(name, guid)
     if not IsKnownHunter(name, guid) then return false end
+
+    -- PARTY_KILL is authoritative when our group receives credit, but a real
+    -- Hunter can also die nearby to somebody outside our group. UNIT_DIED alone
+    -- is therefore not proof of Feign Death.
     local confirmedAt = guid and tonumber(recentConfirmedPlayerKills[guid]) or 0
-    return not confirmedAt or confirmedAt == 0 or (GetTime() - confirmedAt) > 2.0
+    if confirmedAt > 0 and (GetTime() - confirmedAt) <= 2.0 then return false end
+
+    if self.IsRecentFeign and self:IsRecentFeign(name, guid) then return true end
+    return IsUnitCurrentlyFeigningName(name) == true
 end
 
 IsKnownHunter = function(name, guid)
@@ -4493,35 +4500,17 @@ function GT:HandleHunterUnitDied(playerGUID, playerName)
         return true
     end
 
-    -- UNIT_DIED by itself is ambiguous for Hunters on Classic Era. Do not announce
-    -- FEIGN synchronously. Hold it briefly so PARTY_KILL from another callback can
-    -- win first. A token makes stale timers harmless.
-    GT._pendingHunterDeaths = GT._pendingHunterDeaths or {}
-    local token = (GT._pendingHunterDeathToken or 0) + 1
-    GT._pendingHunterDeathToken = token
-    GT._pendingHunterDeaths[playerGUID] = token
-
-    local function classify()
-        if not GT._pendingHunterDeaths or GT._pendingHunterDeaths[playerGUID] ~= token then return end
-        GT._pendingHunterDeaths[playerGUID] = nil
-
-        local realAt = tonumber(recentConfirmedPlayerKills[playerGUID]) or 0
-        if realAt > 0 and (GetTime() - realAt) <= 2.0 then
-            ClearHunterFeign(playerGUID, playerName)
-            return
-        end
-
-        -- With no real kill credit after the grace window, this matches the
-        -- controlled Classic Era Feign signature: Hunter UNIT_DIED without PARTY_KILL.
+    -- A nearby player outside our party can genuinely kill a Hunter and we will
+    -- see UNIT_DIED without receiving PARTY_KILL. Never infer Feign from that
+    -- absence alone. Require positive Feign evidence: a recent 5384 event, the
+    -- client live-unit state, or the unconscious flag handled by the caller.
+    if (GT.IsRecentFeign and GT:IsRecentFeign(playerName, playerGUID))
+        or IsUnitCurrentlyFeigningName(playerName) then
         MarkHunterFeign(playerGUID, playerName)
+        return true
     end
 
-    if C_Timer and C_Timer.After then
-        C_Timer.After(0.35, classify)
-    else
-        classify()
-    end
-    return true
+    return false
 end
 
 function GT:HandleHunterFeign(playerGUID, playerName)
@@ -4769,9 +4758,14 @@ combatMonitor:SetScript("OnEvent", function(_, event, ...)
         if subEvent == "UNIT_DIED"
             and destGUID and destName and IsPlayerGUID(destGUID)
             and IsKnownHunter(destName, destGUID) then
-            GT:HandleHunterUnitDied(destGUID, destName)
-            recentOutgoingVictims[destGUID] = nil
-            return
+            -- UNIT_DIED alone is ambiguous: real deaths caused by players outside
+            -- our group also arrive without PARTY_KILL. Only stop here when we
+            -- have positive Feign evidence. Otherwise let the normal death/assist
+            -- fallback below evaluate the event.
+            if GT:HandleHunterUnitDied(destGUID, destName) then
+                recentOutgoingVictims[destGUID] = nil
+                return
+            end
         end
 
         if subEvent == "UNIT_DIED"
