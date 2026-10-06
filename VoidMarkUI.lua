@@ -663,12 +663,6 @@ function VM:StyleRow(num, name, desc, opacity)
     row.RightText:SetText(levelText)
     row.RightText:SetTextColor(0.90, 0.90, 0.94, opacity or 1)
 
-    -- Hide/remove any legacy threat column created by an older loaded version.
-    if row.VoidMarkThreatText then
-        row.VoidMarkThreatText:SetText("")
-        row.VoidMarkThreatText:Hide()
-    end
-
     local cr, cg, cb = VM.ROW_UNKNOWN[1], VM.ROW_UNKNOWN[2], VM.ROW_UNKNOWN[3]
     if isKOS then
         cr, cg, cb = VM.ROW_KOS[1], VM.ROW_KOS[2], VM.ROW_KOS[3]
