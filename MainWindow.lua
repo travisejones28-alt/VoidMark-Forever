@@ -874,17 +874,14 @@ function VoidMark:SetBar(num, name, desc, value, colorgroup, colorclass, tooltip
 	local Row = VoidMark.MainWindow.Rows[num]
 	Row.StatusBar:SetValue(value)
 
-	-- TALIAA VOIDMARK PRIORITY MARKERS
-	-- KOS takes priority: skull.
-	-- HIGH threat (but not KOS): star.
-	-- Row.Name remains the real player name so secure click-targeting is unaffected.
-	-- Forever uses a main + secondary name. Keep the compact internal
-	-- Main-Secondary key, but display the complete player-facing name.
+	-- TALIAA VOIDMARK PRIORITY MARKER
+	-- KOS remains the only record-derived priority marker in the row.
+	-- Forever uses a main + secondary name internally, but displays the
+	-- complete player-facing name.
 	local bareName = (VoidMarkForever and VoidMarkForever.DisplayName and VoidMarkForever.DisplayName(name))
 		or (tostring(name):match("^([^%-]+)") or tostring(name))
 	local displayName = bareName
 	local isKOS = false
-	local isHighThreat = false
 
 	if VoidMarkPerCharDB and VoidMarkPerCharDB.KOSData and VoidMarkPerCharDB.KOSData[name] then
 		isKOS = true
@@ -898,44 +895,16 @@ function VoidMark:SetBar(num, name, desc, value, colorgroup, colorclass, tooltip
 		isKOS = true
 	end
 
-	if VoidMark.CalculateThreatScore then
-		local _, markerThreatLevel = VoidMark:CalculateThreatScore(name)
-		if markerThreatLevel == "HIGH" then
-			isHighThreat = true
-		end
-	end
-
 	if isKOS then
 		displayName = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:16:16:0:0|t " .. bareName
-	elseif isHighThreat then
-		displayName = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_1:16:16:0:0|t " .. bareName
 	end
 
 	Row.LeftText:SetText(displayName)
 
-	-- TALIAA VOIDMARK THREAT DISPLAY
-	-- UNKNOWN threat is intentionally blank in the compact VoidMark row.
-	local threatDisplay = ""
-	if VoidMark.CalculateThreatScore then
-		local score, level = VoidMark:CalculateThreatScore(name)
-		if level == "HIGH" then
-			threatDisplay = "|cffff3333[HIGH]|r"
-		elseif level == "LOW" then
-			threatDisplay = "|cff33ff33[LOW]|r"
-		elseif level == "EVEN" then
-			threatDisplay = "|cffffff00[EVEN]|r"
-		end
-	end
-
 	if desc and desc ~= "" then
-		if threatDisplay ~= "" then
-			-- VoidMark order: Name | Level Class | Threat
-			Row.RightText:SetText(desc .. " " .. threatDisplay)
-		else
-			Row.RightText:SetText(desc)
-		end
+		Row.RightText:SetText(desc)
 	else
-		Row.RightText:SetText(threatDisplay)
+		Row.RightText:SetText("")
 	end
 
 	Row.Name = name
@@ -1418,139 +1387,23 @@ function VoidMark:ShowTooltip(self, show, id)
 					GameTooltip:AddLine(details..L["Player"], detailsText.r, detailsText.g, detailsText.b)
 				end
 
-				-- TALIAA VOIDMARK THREAT INTELLIGENCE
-				if VoidMark.CalculateThreatScore then
-					local score, level, confidence = VoidMark:CalculateThreatScore(name)
-					local threat = playerData.threatData
-					local wins = 0
-					local losses = 0
-					local completed = 0
-					local winRate = 0
-					local avgFight = 0
-					local avgLoss = 0
-					local damageDone = 0
-					local damageTaken = 0
-					local disengaged = 0
-					local interrupted = 0
-					local lastResult = nil
-
-					if threat then
-						wins = threat.wins or 0
-						losses = threat.losses or 0
-						completed = wins + losses
-						if completed > 0 then
-							winRate = (wins / completed) * 100
-						end
-						if (threat.fights or 0) > 0 then
-							avgFight = (threat.totalCombatTime or 0) / threat.fights
-						end
-						if losses > 0 then
-							avgLoss = (threat.totalLossTime or 0) / losses
-						end
-						damageDone = threat.damageDone or 0
-						damageTaken = threat.damageTaken or 0
-						disengaged = threat.disengaged or 0
-						interrupted = threat.interrupted or 0
-						lastResult = threat.lastResult
-					end
-
-					local r, g, b = 0.67, 0.67, 0.67
-					if level == "HIGH" then
-						r, g, b = 1, 0, 0
-					elseif level == "HIGH" then
-						r, g, b = 1, 0.5, 0
-					elseif level == "EVEN" then
-						r, g, b = 1, 1, 0
-					elseif level == "LOW" then
-						r, g, b = 0, 1, 0
-					elseif level == "LOW" then
-						r, g, b = 0.4, 1, 0.4
-					end
-
-					GameTooltip:AddLine(" ")
-					GameTooltip:AddDoubleLine(
-						"Threat",
-						level,
-						1, 1, 1,
-						r, g, b
-					)
-					GameTooltip:AddDoubleLine(
-						"Confidence",
-						confidence,
-						1, 1, 1,
-						0.85, 0.85, 0.85
-					)
-					if completed > 0 then
-						GameTooltip:AddDoubleLine(
-							"Threat Record",
-							wins .. "W - " .. losses .. "L (" .. math.floor(winRate + 0.5) .. "% wins)",
-							1, 1, 1,
-							0.85, 0.85, 0.85
-						)
-					end
-
-					-- Old VoidMark W/L is lifetime history and is separate from the
-					-- newer fight-based threat record above.
-					local lifetimeWins = tonumber(playerData.wins) or 0
-					local lifetimeLosses = tonumber(playerData.loses) or 0
-					if TaliaaGankRepository and TaliaaGankRepository.GetHistoricalStats then
-						local repoWins, repoLosses = TaliaaGankRepository:GetHistoricalStats(name, playerData.guid)
-						lifetimeWins = math.max(lifetimeWins, tonumber(repoWins) or 0)
-						lifetimeLosses = math.max(lifetimeLosses, tonumber(repoLosses) or 0)
-					end
-					if lifetimeWins > 0 or lifetimeLosses > 0 then
-						GameTooltip:AddDoubleLine(
-							"Lifetime Record",
-							lifetimeWins .. " kills - " .. lifetimeLosses .. " deaths",
-							1, 1, 1,
-							0.78, 0.58, 1.0
-						)
-					end
-
-					if threat and completed > 0 then
-						GameTooltip:AddDoubleLine(
-							"Completed",
-							tostring(completed),
-							1, 1, 1,
-							0.85, 0.85, 0.85
-						)
-						GameTooltip:AddDoubleLine(
-							"Avg Fight",
-							string.format("%.1f sec", avgFight),
-							1, 1, 1,
-							0.85, 0.85, 0.85
-						)
-						if losses > 0 then
-							GameTooltip:AddDoubleLine(
-								"Avg Loss",
-								string.format("%.1f sec", avgLoss),
-								1, 1, 1,
-								0.85, 0.85, 0.85
-							)
-						end
-						GameTooltip:AddDoubleLine(
-							"Damage",
-							damageDone .. " done / " .. damageTaken .. " taken",
-							1, 1, 1,
-							0.85, 0.85, 0.85
-						)
-						GameTooltip:AddDoubleLine(
-							"Other",
-							disengaged .. " disengaged / " .. interrupted .. " interrupted",
-							1, 1, 1,
-							0.85, 0.85, 0.85
-						)
-						if lastResult then
-							GameTooltip:AddDoubleLine(
-								"Last Result",
-								tostring(lastResult),
-								1, 1, 1,
-								0.85, 0.85, 0.85
-							)
-						end
-					end
+				-- Lifetime VoidMark W/L history. Legacy threat/confidence/fight
+				-- telemetry is intentionally not exposed in the player tooltip.
+				local lifetimeWins = tonumber(playerData.wins) or 0
+				local lifetimeLosses = tonumber(playerData.loses) or 0
+				if TaliaaGankRepository and TaliaaGankRepository.GetHistoricalStats then
+					local repoWins, repoLosses = TaliaaGankRepository:GetHistoricalStats(name, playerData.guid)
+					lifetimeWins = math.max(lifetimeWins, tonumber(repoWins) or 0)
+					lifetimeLosses = math.max(lifetimeLosses, tonumber(repoLosses) or 0)
 				end
-
+				if lifetimeWins > 0 or lifetimeLosses > 0 then
+					GameTooltip:AddDoubleLine(
+						"Lifetime Record",
+						lifetimeWins .. " kills - " .. lifetimeLosses .. " deaths",
+						1, 1, 1,
+						0.78, 0.58, 1.0
+					)
+				end
 
 				if VoidMarkPerCharDB.KOSData[name] then
 					local reasonText = VoidMark.db.profile.Colors.Tooltip["Reason Text"]
