@@ -2225,7 +2225,7 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 		-- update win stats / Gank Tracker
 		if event == "PARTY_KILL" then
 			-- PARTY_KILL fires when YOU OR A GROUP MEMBER gets the killing blow.
-			-- The tracker should count the group gank, while threat W/L stays personal.
+			-- The tracker should count the group gank, while lifetime W/L stays personal.
 			local isPlayerVictim = dstGUID and strsub(dstGUID, 1, 6) == "Player"
 
 			local playerData = dstName and VoidMarkPerCharDB
