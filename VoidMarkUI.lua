@@ -1,8 +1,8 @@
 -- VoidMark Stage 2 UI layer
 -- UI Adjust 1: tighter compact header; backend/data behavior unchanged.
 -- Keeps the existing VoidMark backend, SavedVariables, secure target rows,
--- detection logic, threat logic and synchronization intact while replacing the
--- visible main-window presentation with a compact Shadow Priest themed shell.
+-- detection logic and synchronization intact while replacing the visible
+-- main-window presentation with a compact Shadow Priest themed shell.
 
 local VM = {}
 VoidMark.VoidMark = VM
@@ -12,8 +12,6 @@ VM.PURPLE = {0.56, 0.20, 0.82}
 VM.PURPLE_BRIGHT = {0.76, 0.42, 1.00}
 VM.BG = {0.015, 0.010, 0.025, 0.97}
 VM.ROW_UNKNOWN = {0.075, 0.075, 0.095}
-VM.ROW_LOW = {0.025, 0.17, 0.09}
-VM.ROW_HIGH = {0.30, 0.20, 0.025}
 VM.ROW_KOS = {0.38, 0.035, 0.05}
 VM.ROW_STEALTH = {0.20, 0.045, 0.31}
 
@@ -56,17 +54,6 @@ local function IsStealth(name)
         return false
     end
     return true
-end
-
-local function ThreatLevel(name)
-    if VoidMark.CalculateThreatScore then
-        local _, level, confidence = VoidMark:CalculateThreatScore(name)
-        if level == "HIGH" or level == "LOW" then
-            return level, confidence
-        end
-        return "UNKNOWN", confidence
-    end
-    return "UNKNOWN", "Unknown"
 end
 
 local function ClassColor(class)
@@ -117,10 +104,7 @@ end
 
 function VM:GetPriority(name)
     if IsKOS(name) then return 600 end
-    local threat = ThreatLevel(name)
-    if threat == "HIGH" then return 400 end
     if IsStealth(name) then return 300 end
-    if threat == "UNKNOWN" then return 200 end
     return 100
 end
 
@@ -609,13 +593,10 @@ function VM:StyleRow(num, name, desc, opacity)
     local r, g, b = ClassColor(class)
     local isKOS = IsKOS(name)
     local isStealth = IsStealth(name)
-    local threat = ThreatLevel(name)
 
     local marker = ""
     if isKOS then
         marker = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:13:13:0:0|t "
-    elseif threat == "HIGH" then
-        marker = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_1:13:13:0:0|t "
     elseif isStealth then
         marker = "|TInterface\\Icons\\Ability_Stealth:13:13:0:0|t "
     end
@@ -628,38 +609,15 @@ function VM:StyleRow(num, name, desc, opacity)
     row.LeftText:SetText(marker .. displayName)
     row.LeftText:SetTextColor(r, g, b, opacity or 1)
 
-    local status
-    if isKOS then
-        status = "|cffff4d5dKOS|r"
-    elseif threat == "HIGH" then
-        status = "|cffffcf4aHIGH|r"
-    elseif threat == "LOW" then
-        status = "|cff43e67bLOW|r"
-    else
-        -- Unknown threat is intentionally blank in the compact list.
-        status = ""
-    end
-
-    -- Fixed compact columns: Name | Threat | Level | Class icon | Record.
-    -- Threat keeps a reserved column even when UNKNOWN so level/class/record
-    -- alignment never shifts between rows.
     local levelText = (data and data.level) and tostring(data.level) or ""
     local classIcon = ClassIconTag(class, 16)
     if classIcon == "" and class then
-        -- Very old clients should still show something useful if Blizzard's
-        -- icon coordinate table is unavailable.
         classIcon = tostring(class)
     end
 
-    -- Personal record against this player. These totals are kept in PlayerData by
-    -- the shared VoidMark history repository, so the row stays cheap to render and
-    -- does not need to scan the full historical database on every refresh.
+    -- Personal lifetime record against this player.
     local kills = tonumber(data and data.wins) or 0
     local deaths = tonumber(data and data.loses) or 0
-    -- The compact row must use the same lifetime repository as the details
-    -- panel/tooltip.  data.wins/data.loses can lag behind recovered or synced
-    -- kills, which made the row show e.g. 5-0 while chat correctly showed
-    -- Historical 7x.
     if TaliaaGankRepository and TaliaaGankRepository.GetHistoricalStats then
         local repoKills, repoDeaths = TaliaaGankRepository:GetHistoricalStats(name, data and data.guid)
         kills = math.max(kills, tonumber(repoKills) or 0)
@@ -697,8 +655,7 @@ function VM:StyleRow(num, name, desc, opacity)
     row.VoidMarkClassText:SetText(classIcon)
     row.VoidMarkClassText:SetTextColor(0.90, 0.90, 0.94, opacity or 1)
 
-    -- Level: immediately left of the class icon. Reuse the original right-side
-    -- text field so no extra secure-row behavior is introduced.
+    -- Level: immediately left of the class icon.
     row.RightText:ClearAllPoints()
     row.RightText:SetPoint("RIGHT", row.VoidMarkClassText, "LEFT", -3, 0)
     row.RightText:SetWidth(24)
@@ -706,28 +663,17 @@ function VM:StyleRow(num, name, desc, opacity)
     row.RightText:SetText(levelText)
     row.RightText:SetTextColor(0.90, 0.90, 0.94, opacity or 1)
 
-    -- Threat: fixed-width column to the LEFT of level. Unknown remains blank,
-    -- but the 42px slot is still reserved so every row stays aligned.
-    if not row.VoidMarkThreatText then
-        row.VoidMarkThreatText = row.StatusBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.VoidMarkThreatText:SetJustifyH("RIGHT")
-        MatchRightFont(row.VoidMarkThreatText)
+    -- Hide/remove any legacy threat column created by an older loaded version.
+    if row.VoidMarkThreatText then
+        row.VoidMarkThreatText:SetText("")
+        row.VoidMarkThreatText:Hide()
     end
-    row.VoidMarkThreatText:ClearAllPoints()
-    row.VoidMarkThreatText:SetPoint("RIGHT", row.RightText, "LEFT", -3, 0)
-    row.VoidMarkThreatText:SetWidth(42)
-    row.VoidMarkThreatText:SetText(status)
-    row.VoidMarkThreatText:SetTextColor(0.90, 0.90, 0.94, opacity or 1)
 
     local cr, cg, cb = VM.ROW_UNKNOWN[1], VM.ROW_UNKNOWN[2], VM.ROW_UNKNOWN[3]
     if isKOS then
         cr, cg, cb = VM.ROW_KOS[1], VM.ROW_KOS[2], VM.ROW_KOS[3]
-    elseif threat == "HIGH" then
-        cr, cg, cb = VM.ROW_HIGH[1], VM.ROW_HIGH[2], VM.ROW_HIGH[3]
     elseif isStealth then
         cr, cg, cb = VM.ROW_STEALTH[1], VM.ROW_STEALTH[2], VM.ROW_STEALTH[3]
-    elseif threat == "LOW" then
-        cr, cg, cb = VM.ROW_LOW[1], VM.ROW_LOW[2], VM.ROW_LOW[3]
     end
 
     local alpha = opacity or 1
@@ -740,9 +686,8 @@ function VM:StyleRow(num, name, desc, opacity)
     end
 
     row.StatusBar:SetStatusBarColor(cr, cg, cb, alpha)
-    -- Reserve the entire fixed right-side column block for Threat/Level/Class/Record.
-    -- This prevents long names from drawing underneath those columns.
-    local rightColumnsWidth = 24 + 3 + 42 + 3 + 20 + 3 + 31 + 4
+    -- Fixed right-side columns: Level | Class icon | Lifetime record.
+    local rightColumnsWidth = 24 + 3 + 20 + 3 + 31 + 4
     row.LeftText:SetWidth(math.max(40, row:GetWidth() - rightColumnsWidth - 4))
 end
 
@@ -806,14 +751,11 @@ function VM:CreateDetailsFrame()
     SetFont(f.Name, "Fonts\\FRIZQT__.TTF", 12, "OUTLINE", GameFontNormal)
 
     f.LevelClass = CreateDetailLabel(f, -50, "Identity")
-    f.Threat = CreateDetailLabel(f, -67, "Threat")
-    f.Record = CreateDetailLabel(f, -84, "Fight Record")
-    f.Lifetime = CreateDetailLabel(f, -101, "Lifetime")
+    f.Lifetime = CreateDetailLabel(f, -67, "Lifetime")
     f.Ganks = f.Lifetime
-    f.Damage = CreateDetailLabel(f, -118, "Damage")
-    f.LastSeen = CreateDetailLabel(f, -135, "Last Seen")
-    f.Location = CreateDetailLabel(f, -152, "Location")
-    f.Note = CreateDetailLabel(f, -169, "Note")
+    f.LastSeen = CreateDetailLabel(f, -84, "Last Seen")
+    f.Location = CreateDetailLabel(f, -101, "Location")
+    f.Note = CreateDetailLabel(f, -118, "Note")
 
     f.TargetButton = CreateFrame("Button", nil, f, "BackdropTemplate")
     f.TargetButton:SetSize(72, 20)
@@ -900,21 +842,6 @@ function VoidMark:ShowVoidMarkDetails(name)
     local identity = "L" .. tostring(data.level or "?") .. " " .. tostring(data.class and (RAID_CLASS_COLORS[data.class] and data.class or data.class) or "Unknown")
     f.LevelClass:SetText(identity)
 
-    local threat, confidence = ThreatLevel(name)
-    local special = IsKOS(name) and "KOS" or threat
-    f.Threat:SetText(tostring(special) .. " • " .. tostring(confidence or "Unknown"))
-
-    local td = data.threatData or {}
-    local wins = tonumber(td.wins) or 0
-    local losses = tonumber(td.losses) or 0
-    local completed = wins + losses
-    local avg = 0
-    if (tonumber(td.fights) or 0) > 0 then avg = (tonumber(td.totalCombatTime) or 0) / tonumber(td.fights) end
-    f.Record:SetText(string.format("%dW - %dL • %d fights • %.1fs avg", wins, losses, completed, avg))
-    f.Damage:SetText(string.format("%d done / %d taken", tonumber(td.damageDone) or 0, tonumber(td.damageTaken) or 0))
-
-    -- Lifetime is the old VoidMark/gank history. Keep it separate from the newer
-    -- fight-based threat record so archived kills do not appear to vanish.
     local kills = tonumber(data.wins) or 0
     local deaths = tonumber(data.loses) or 0
     if TaliaaGankRepository and TaliaaGankRepository.GetHistoricalStats then
