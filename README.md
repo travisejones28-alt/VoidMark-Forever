@@ -1,6 +1,17 @@
 # VoidMark
 
-WoW Forever implementation of VoidMark, based on the supplied working 0.1.5 Forever build and Classic Era commit `fb67dd5` (1.3.10). Classic Era remains a read-only functionality reference.
+WoW Forever implementation of VoidMark. Version 1.1.0 ports the Classic Era changes through `f6e6218`, preserving the working Forever client adapters, complete character identities and existing saved data. Classic Era remains a read-only functionality reference.
+
+## Version 1.1.0
+
+- Settings wheel: **Distract Alert** warns locally when an observed hostile player casts Distract. Readable visible-unit spell events work without combat-log access; readable combat-log casts also work. Duplicate observations share a three-second cooldown. Distract is ground-targeted, so the warning says it was used without claiming you were affected. The alert has its own module to avoid GankTracker's Lua 5.1 local-variable limit.
+- Settings wheel: **KOS Alert** controls WHO sightings delivered by VoidLink (`VMKOS1` or `VoidMarkKOS_OnWhoResult`). Banners combine names/classes and remain visible for ten seconds. Group matches can be shared; guild requester-only results stay private. Reasons are shared only when explicitly enabled. Complete Forever names are required; a matching primary name alone is insufficient. `/vmkos` shows options; `on/off`, `share on/off`, `reasons on/off`, `sound on/off`, and `cooldown 30..1800` configure them.
+- Kill Effects now separates normal 1–2 kill sounds from 3+ multi-kill sounds. Feign cancels only that victim's recent sound, using GUIDs or complete names. Sounds resolve from the installed VoidMarkForever folder.
+- Damage Records has a **POPUP** switch. Hiding banners keeps recording and the existing chat announcements active.
+- Enemy Moves uses LOW strata so stock bags and panels cover it. The separate options window keeps its dialog layer.
+- Ride or Die retains blocked swaps and checks actual equipment after dismount/Sap recovery before reporting success.
+- Gank Repository clears legacy automatic peer links once without changing history. Pairing requires **PAIR on both clients within 14 seconds**, then **SYNC NOW** for history reconciliation. Login/reload clears live session links; repeat manual pairing when needed. Background friend discovery and unsolicited pairing are disabled. KOS party sharing operates separately.
+- Carries the PvP assist-credit constant and diagnostic locale fixes. GitHub Actions runs the Forever Lua 5.1 regressions on pushes and pull requests.
 
 ## Install and preserve existing data
 
@@ -35,4 +46,4 @@ The runtime boundary preserves the working Forever visible-unit detection, compl
 
 ## Validation
 
-`python tests/validate.py` with `lupa` installed compiles every Lua file under Lua 5.1, parses XML/embedded scripts, verifies the TOC/include graph and packaged assets, and exercises startup plus mocked native kills/deduplication, unconscious/non-group rejection, full-name identity, canonical W/L, loss deduplication, character damage isolation and restricted/secret event handling. These checks cannot prove WoW's secure execution, server event semantics or client rendering.
+Install the pinned test runtime with `python -m pip install -r tests/requirements.txt`, then run `python tests/validate.py` from the repository root. It compiles every addon Lua file under Lua 5.1, parses XML/embedded scripts, verifies the TOC/include graph and packaged assets, and exercises startup plus mocked native kills/deduplication, unconscious/non-group rejection, full-name identity, canonical W/L, loss deduplication, character damage isolation, restricted/secret event handling, both Distract event paths, KOS matching/privacy/banner timing, explicit pairing and legacy migration, popup settings, frame strata, sound settings/cancellation, and post-Sap equipment recovery. These checks cannot prove WoW's secure execution, server event semantics or client rendering.

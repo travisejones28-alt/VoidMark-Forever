@@ -15,8 +15,6 @@ local VOIDMARK_REPO_BUILD = "2026-09-28-v9.5-chunked-account-sync"
 local HISTORY_VERSION = 8
 local DEDUPE_SECONDS = 6
 local SEND_INTERVAL = 0.08
-local AUTO_PAIR_RETRY = 20
-local AUTO_SYNC_RETRY = 8
 local DIRECT_PAIR_MAX_ID = 100
 local DIRECT_PAIR_STEP_DELAY = 0.08
 
@@ -236,7 +234,17 @@ local function EnsureSyncDB()
     local db = VoidMarkDB.TaliaaGankSync
     db.version = 3
     if db.enabled == nil then db.enabled = true end
-    if db.autoPair == nil then db.autoPair = true end
+    -- Migrate older installations away from unsolicited Battle.net friend pairing.
+    -- Historical kill sync requires an explicit pairing action on both clients.
+    if db.pairConsentVersion ~= 2 then
+        db.pairConsentVersion = 2
+        db.peerGameAccountID = nil
+        db.peerSessionToken = nil
+        db.lastKnownPeerGameAccountID = nil
+        db.peerName = nil
+        db.peerBattleTag = nil
+    end
+    db.autoPair = false
     if db.autoSync == nil then db.autoSync = true end
     db.nextSeq = tonumber(db.nextSeq) or 0
     db.nextDHKSeq = tonumber(db.nextDHKSeq) or 0
@@ -3070,10 +3078,12 @@ function Repo:StartPairing(silent)
     end
 
     local sync = EnsureSyncDB()
+    -- Background callers must never initiate broad Battle.net probes.
+    if silent or not sync or sync.enabled == false then return false end
     pairNonce = tostring(Now()) .. "-" .. tostring(math.random(10000, 99999))
     pairing = true
     pairingSilent = silent and true or false
-    if not silent then Print("Searching for Aloha's external WoW account.") end
+    if not silent then Print("Searching for a second account. Run PAIR on BOTH clients within 14 seconds.") end
 
     -- Probe any visible Battle.net-friend game accounts first.
     local candidates = DiscoverOnlineWoWGameAccounts(sync and sync.peerBattleTag or nil)
@@ -3126,7 +3136,7 @@ function Repo:StartPairing(silent)
         if pairing then
             pairing = false
             if not pairingSilent then
-                Print("Pair probe timed out after scanning BNet IDs 1-" .. tostring(DIRECT_PAIR_MAX_ID) .. ". Keep Aloha and Taliaa/Ganktastic online, then /tgank pair again.")
+                Print("Pair probe timed out after scanning BNet IDs 1-" .. tostring(DIRECT_PAIR_MAX_ID) .. ". Keep both accounts online and run /tgank pair on both clients again.")
             end
         end
     end)
@@ -3154,6 +3164,9 @@ function Repo:Unpair()
     sync.peerName = nil
     sync.peerBattleTag = nil
     sync.peerSessionToken = nil
+    sync.lastKnownPeerGameAccountID = nil
+    sync.autoPair = false
+    pairing = false
     wipe(sendQueue)
     sendHead = 1
     sendTail = 0
@@ -3189,13 +3202,15 @@ function Repo:PrintStatus(playerName)
     if paired then
         Print("Peer account: connected via " .. tostring(peerName or "paired character") .. " (current-session ID " .. tostring(peerID) .. ").")
     else
-        Print("Peer account: not connected. Auto-pair is " .. ((EnsureSyncDB().autoPair ~= false) and "ON" or "OFF") .. ".")
+        Print("Peer account: not connected. Run PAIR on both clients to connect.")
     end
 end
 
 local function ReplyPair(senderID, nonce, senderName, senderNode, senderSessionToken, payloadSenderID)
     local sync = EnsureSyncDB()
     if not sync or not nonce or nonce == "" then return end
+    -- Ignore unsolicited probes unless this installation initiated pairing.
+    if not pairing or pairingSilent or sync.enabled == false then return end
     if NormalizePlayerName(senderName) == NormalizePlayerName(VMAPI.UnitName("player")) then return end
     if not senderSessionToken or senderSessionToken == "" then return end
     if tostring(senderSessionToken) == tostring(EnsureLocalSessionToken()) then return end
@@ -3225,6 +3240,7 @@ local function ReplyPair(senderID, nonce, senderName, senderNode, senderSessionT
     sync.peerBattleTag = (battleTag and battleTag ~= "") and battleTag or sync.peerBattleTag
     sync.peerSessionToken = tostring(senderSessionToken)
     sync.lastPeerSeen = Now()
+    pairing = false
 
     -- Pair ACK is sent immediately so it cannot sit behind a large history sync queue.
     SendBN(id, table.concat({
@@ -3450,28 +3466,8 @@ local function HandlePayload(payload, senderID)
     end
 end
 
-local function AutoConnectAndSync()
-    -- v9.4: Auto-connect may discover/refresh the peer, but it must NEVER start
-    -- a full repository reconciliation. SYNC NOW is the sole entry point for a
-    -- historical sync transaction. This prevents BN friend-state changes, login
-    -- timers, and simultaneous pair handshakes from spawning overlapping passes.
-    local sync = EnsureSyncDB()
-    if not sync or sync.enabled == false then return end
-
-    if not sync.peerGameAccountID and sync.autoPair ~= false and not pairing then
-        Repo:StartPairing(true)
-        C_Timer.After(AUTO_PAIR_RETRY, function()
-            local s = EnsureSyncDB()
-            if s and not s.peerGameAccountID and s.autoPair ~= false and not pairing then
-                Repo:StartPairing(true)
-            end
-        end)
-    end
-end
-
 VoidMarkForever.RegisterEvent(frame,"PLAYER_LOGIN")
 VoidMarkForever.RegisterEvent(frame,"BN_CHAT_MSG_ADDON")
-VoidMarkForever.RegisterEvent(frame,"BN_FRIEND_INFO_CHANGED")
 
 frame:SetScript("OnEvent", function(_, event, ...)
     if event == "PLAYER_LOGIN" then
@@ -3480,17 +3476,16 @@ frame:SetScript("OnEvent", function(_, event, ...)
         EnsureDHKHistory()
         RepairDHKHistory()
 
-        -- TGANK2 always renegotiates the live gameAccountID/session token on
-        -- login or /reload. Keep peerBattleTag/peerName as rediscovery hints,
-        -- but never trust a stale ID from the old self-pairing builds.
+        -- Session IDs cannot survive login/reload. Keep names as hints for the
+        -- next explicit pairing action, never initiate background discovery.
         EnsureLocalSessionToken()
         if loginSync then
             -- A live sync transaction cannot survive a reload/login. These fields
             -- are SavedVariables, so an interrupted sync used to come back after
             -- login as (for example) "SYNCING 1797777s" and keep SYNC NOW
             -- disabled. Always discard transient transaction state here; the
-            -- repository itself is preserved and the normal auto-sync below will
-            -- negotiate a fresh comparison with the peer.
+            -- repository itself is preserved; manual PAIR and SYNC NOW can
+            -- establish a fresh transaction with the intended account.
             loginSync.syncing = false
             loginSync.syncStartedAt = 0
             loginSync.bulkReceivePending = nil
@@ -3556,13 +3551,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
         end
         C_Timer.After(1.0, BuildVoidMarkIndexWhenSafe)
 
-        -- BNet game-account IDs are temporary for the current Battle.net session,
-        -- so refresh the peer every login/reload instead of trusting an old ID.
-        C_Timer.After(2, function()
-            local s = EnsureSyncDB()
-            if s and s.enabled ~= false and s.autoPair ~= false then Repo:StartPairing(true) end
-        end)
-        C_Timer.After(8, AutoConnectAndSync)
         return
     end
 
@@ -3578,16 +3566,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
         return
     end
 
-    if event == "BN_FRIEND_INFO_CHANGED" then
-        local sync = EnsureSyncDB()
-        if sync then
-            local now = Now()
-            if now - (tonumber(sync.lastFriendAutoSync) or 0) >= 30 then
-                sync.lastFriendAutoSync = now
-                C_Timer.After(1, AutoConnectAndSync)
-            end
-        end
-    end
 end)
 
 frame:SetScript("OnUpdate", function(_, elapsed)

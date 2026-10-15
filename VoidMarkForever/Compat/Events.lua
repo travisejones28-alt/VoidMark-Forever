@@ -82,6 +82,10 @@ local function ObserveSpell(unit,id,event)
     CacheUnit(unit)
     local guid=F.Safe(UnitGUID,unit)
     local identity=guid and identities[guid]
+    if event=="SPELL_CAST_SUCCESS" and identity and identity.player and identity.hostile
+        and TaliaaGankTracker.ObserveDistractCast then
+        TaliaaGankTracker:ObserveDistractCast(id,guid,identity.name,true)
+    end
     if id==5384 and identity and identity.player and identity.hostile then
         TaliaaGankTracker:HandleHunterFeign(guid,identity.name)
     end

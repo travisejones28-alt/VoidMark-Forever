@@ -4405,7 +4405,7 @@ MarkHunterFeign = function(guid, name)
     -- If a kill sound raced ahead of Classic's Feign classification, stop it
     -- immediately when Feign is confirmed.
     if VoidMarkKillEffects and VoidMarkKillEffects.StopActiveSound then
-        VoidMarkKillEffects:StopActiveSound()
+        VoidMarkKillEffects:StopActiveSound(name, guid)
     end
 
     local now = GetTime()

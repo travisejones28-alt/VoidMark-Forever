@@ -401,7 +401,8 @@ local function BuildUI()
     if frame then return end
     frame=CreateFrame("Frame","VoidMarkEnemyMovesFrame",UIParent,"BackdropTemplate")
     frame:SetSize(FRAME_W,HEADER_H+STATUS_H+10)
-    frame:SetFrameStrata("HIGH")
+    -- Keep cooldown rows below stock bags and panels. Options remain DIALOG.
+    frame:SetFrameStrata("LOW")
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
     frame:EnableMouse(true)

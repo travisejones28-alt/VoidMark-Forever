@@ -5,9 +5,11 @@ local VMAPI = VoidMarkForever.API
 VoidMarkKillEffects = VoidMarkKillEffects or {}
 local KE = VoidMarkKillEffects
 
-local ADDON = "VoidMark"
+local ADDON = ... or "VoidMarkForever"
 local SOUND_ROOT = "Interface\\AddOns\\" .. ADDON .. "\\Sounds\\KillEffects\\"
 local MULTI_WINDOW = 20
+local SOUND_HANDLE_WINDOW = 8
+local MAX_TRACKED_SOUNDS = 12
 
 local GENERIC_SOUNDS = {
     "ownage.ogg",
@@ -226,19 +228,58 @@ local function PickDifferent(list, lastIndex)
     return list[idx], idx
 end
 
-local function PlayFile(filename)
+local function NormalizeSoundVictimName(name)
+    name = VoidMarkForever.Readable(name)
+    if type(name) ~= "string" or name == "" then return nil end
+    return name:gsub("%s+", "-"):lower()
+end
+
+local function PruneSounds(now)
+    local sounds = KE._activeSounds
+    if not sounds then return nil end
+    for i = #sounds, 1, -1 do
+        if (now - sounds[i].at) > SOUND_HANDLE_WINDOW then
+            table.remove(sounds, i)
+        end
+    end
+    return sounds
+end
+
+local function PlayFile(filename, victimName, victimGUID)
     if not filename or not PlaySoundFile then return end
     local ok, handle = PlaySoundFile(SOUND_ROOT .. filename, "Master")
-    if ok and handle then
-        KE._activeSoundHandle = handle
+    if ok and handle and (victimGUID or victimName) then
+        local now = GetTime and GetTime() or 0
+        local sounds = PruneSounds(now) or {}
+        KE._activeSounds = sounds
+        sounds[#sounds + 1] = {
+            handle = handle,
+            guid = victimGUID,
+            name = NormalizeSoundVictimName(victimName),
+            at = now,
+        }
+        if #sounds > MAX_TRACKED_SOUNDS then
+            table.remove(sounds, 1)
+        end
     end
 end
 
-function KE:StopActiveSound()
-    local handle = self._activeSoundHandle
-    self._activeSoundHandle = nil
-    if handle and StopSound then
-        pcall(StopSound, handle, 0)
+-- Feign must never silence an unrelated kill's sound. Track recent handles by
+-- victim, so overlapping kill sounds can each be cancelled independently.
+function KE:StopActiveSound(victimName, victimGUID)
+    if not victimName and not victimGUID then return end
+    local now = GetTime and GetTime() or 0
+    local sounds = PruneSounds(now)
+    if not sounds then return end
+    local name = NormalizeSoundVictimName(victimName)
+    for i = #sounds, 1, -1 do
+        local sound = sounds[i]
+        local matchesGUID = victimGUID and sound.guid and victimGUID == sound.guid
+        local matchesName = name and sound.name == name and (not victimGUID or not sound.guid)
+        if matchesGUID or matchesName then
+            if StopSound then pcall(StopSound, sound.handle, 0) end
+            table.remove(sounds, i)
+        end
     end
 end
 
@@ -268,16 +309,14 @@ local function TargetMatchesVictim(victimName, victimGUID)
 
     if victimGUID and VMAPI.UnitGUID then
         local targetGUID = VMAPI.UnitGUID("target")
-        if targetGUID and targetGUID == victimGUID then
-            return true
-        end
+        if targetGUID then return targetGUID == victimGUID end
     end
 
-    if victimName and VMAPI.UnitName then
-        local targetName = VMAPI.UnitName("target")
-        local want = tostring(victimName):match("^[^-]+")
-        local have = targetName and tostring(targetName):match("^[^-]+")
-        if want and have and want:lower() == have:lower() then
+    if victimName then
+        local targetName = VoidMarkForever.FullName("target")
+        local want = NormalizeSoundVictimName(victimName)
+        local have = NormalizeSoundVictimName(targetName)
+        if want and have and want == have then
             return true
         end
     end
@@ -326,16 +365,18 @@ function KE:OnKill(victimName, victimGUID)
     end
     self.lastKillAt = now
 
-    if db.killSounds then
-        if db.multiSounds and (tonumber(self.multiCount) or 0) >= 3 then
+    -- Each sound category has its own switch. Disabling normal kills must
+    -- not prevent 3+ multi-kill sounds, or vice versa.
+    if self.multiCount >= 3 then
+        if db.multiSounds then
             local sound
             sound, self.lastMultiIndex = PickDifferent(MULTI_SOUNDS, self.lastMultiIndex)
-            PlayFile(sound)
-        else
-            local sound
-            sound, self.lastGenericIndex = PickDifferent(GENERIC_SOUNDS, self.lastGenericIndex)
-            PlayFile(sound)
+            PlayFile(sound, victimName, victimGUID)
         end
+    elseif db.killSounds then
+        local sound
+        sound, self.lastGenericIndex = PickDifferent(GENERIC_SOUNDS, self.lastGenericIndex)
+        PlayFile(sound, victimName, victimGUID)
     end
 
     DoConfiguredEmote(db, victimName, victimGUID)
@@ -443,11 +484,11 @@ local function BuildOptions()
     help:SetPoint("TOPLEFT", f, "TOPLEFT", 14, -38)
     help:SetWidth(360)
     help:SetJustifyH("LEFT")
-    help:SetText("1–2 kills use random flavor sounds. At 3+ kills, each kill inside a 20 sec chain randomly uses a multi-kill sound.")
+    help:SetText("1–2 kills: regular sounds. 3+ kills: multi-kill sounds (20 sec chain). Each toggle works independently.")
     help:SetTextColor(0.62, 0.55, 0.68, 1)
 
-    f.Enabled = MakeCheck(f, "KILL EFFECTS", 12, -76)
-    f.KillSounds = MakeCheck(f, "KILL SOUNDS", 12, -106)
+    f.Enabled = MakeCheck(f, "ENABLE KILL EFFECTS", 12, -76)
+    f.KillSounds = MakeCheck(f, "1–2 KILL SOUNDS", 12, -106)
     f.MultiSounds = MakeCheck(f, "3+ MULTI-KILL SOUNDS", 198, -106)
     f.Emotes = MakeCheck(f, "POST-KILL EMOTE", 12, -136)
 

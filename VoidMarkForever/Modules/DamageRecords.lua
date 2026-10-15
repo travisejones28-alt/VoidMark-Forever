@@ -14,6 +14,7 @@ local function DB()
     VoidMarkDB.VoidMarkDamageRecords = VoidMarkDB.VoidMarkDamageRecords or {
         version = 2,
         partyAnnounce = true,
+        showPopup = true,
         characters = {},
     }
     local db = VoidMarkDB.VoidMarkDamageRecords
@@ -22,6 +23,7 @@ local function DB()
     if db.partyAnnounce == nil then
         db.partyAnnounce = true
     end
+    if db.showPopup == nil then db.showPopup = true end
     db.yellAnnounce = nil
     db.characters = db.characters or {}
 
@@ -239,7 +241,7 @@ local function SaveRecord(kind, spellID, spellName, amount, critical, destGUID, 
     else
         SelfNotice(record)
     end
-    ShowBanner(record)
+    if db.showPopup then ShowBanner(record) end
     if DR.Refresh then DR:Refresh() end
 end
 
@@ -297,6 +299,7 @@ function DR:Refresh()
     local charName = CurrentCharacter()
     local r = SelectedRecord()
     frame.PartyButton.Text:SetText(db.partyAnnounce and "PARTY ANNOUNCE: ON" or "PARTY ANNOUNCE: OFF")
+    frame.PopupButton.Text:SetText(db.showPopup and "POPUP: ON" or "POPUP: OFF")
     if frame.CharacterLabel then
         frame.CharacterLabel:SetText("CHARACTER: " .. tostring(charName))
     end
@@ -424,6 +427,25 @@ local function BuildUI()
     end)
 
 
+
+    frame.PopupButton = CreateFrame("Button", nil, frame, "BackdropTemplate")
+    frame.PopupButton:SetSize(180, 24)
+    frame.PopupButton:SetPoint("BOTTOMRIGHT", -18, 13)
+    frame.PopupButton:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        edgeSize = 6,
+    })
+    frame.PopupButton:SetBackdropColor(0.08, 0.035, 0.12, 1)
+    frame.PopupButton:SetBackdropBorderColor(0.48, 0.20, 0.68, 1)
+    frame.PopupButton.Text = frame.PopupButton:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    frame.PopupButton.Text:SetAllPoints()
+    frame.PopupButton:SetScript("OnClick", function()
+        local db = DB()
+        db.showPopup = not db.showPopup
+        if not db.showPopup and banner then banner:Hide() end
+        DR:Refresh()
+    end)
 
     frame:Hide()
     DR:Refresh()

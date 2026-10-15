@@ -14,7 +14,7 @@ function GetGameTime()return 12,0 end
 function GetBuildInfo()return "1.60.1","69913","",16001 end
 function GetRealmName()return "TestRealm" end
 function GetExpansionLevel()return 0 end
-function InCombatLockdown()return false end
+function InCombatLockdown()return TEST_IN_COMBAT==true end
 function IsInInstance()return false,"none" end
 function IsInGroup()return true end
 function IsInRaid()return false end
@@ -51,6 +51,7 @@ function GetAddOnMetadata(_,key)return key=="Version" and "1.0.0" or "VoidMark" 
 function GetNumFriends()return 0 end
 function GetFriendInfo()return nil end
 local frames={}
+TEST_FRAMES=frames
 local obj
 obj=function(name)
  local t={name=name,shown=false,scripts={},events={},width=300,height=100,attributes={}}
@@ -64,6 +65,7 @@ obj=function(name)
    SetWidth=function(s,n)s.width=n end,SetHeight=function(s,n)s.height=n end,SetSize=function(s,w,h)s.width=w;s.height=h end,
    GetPoint=function()return "CENTER",UIParent,"CENTER",0,0 end,GetEffectiveScale=function()return 1 end,
    GetScale=function()return 1 end,GetAlpha=function()return 1 end,GetFrameLevel=function()return 1 end,
+   SetFrameStrata=function(s,v)s.strata=v end,GetFrameStrata=function(s)return s.strata or 'MEDIUM' end,
    GetLeft=function()return 0 end,GetRight=function()return 300 end,GetTop=function()return 500 end,GetBottom=function()return 0 end,
    GetFont=function()return "font",12,"" end,GetStringWidth=function()return 100 end,GetText=function(s)return s.text or "" end,
    SetText=function(s,v)s.text=v end,GetFontString=function(s)s.fs=s.fs or obj();return s.fs end,
@@ -115,6 +117,7 @@ LibStub=setmetatable({GetLibrary=function(_,name)return libs[name] end},{__call=
 function PanelTemplates_GetSelectedTab()return 1 end
 for _,name in ipairs({'PlaySound','PlaySoundFile','SendChatMessage','SetCVar','UIFrameFadeIn','UIFrameFadeOut','CloseDropDownMenus','UIDropDownMenu_Initialize','UIDropDownMenu_AddButton','UIDropDownMenu_SetWidth','UIDropDownMenu_SetText','FauxScrollFrame_Update','FauxScrollFrame_OnVerticalScroll','PanelTemplates_TabResize','PanelTemplates_SetTab','PanelTemplates_SetNumTabs','RaidNotice_AddMessage','ToggleDropDownMenu','StaticPopup_Show','UIFrameFadeRemoveFrame','GetCurrentKeyBoardFocus'})do _G[name]=function()end end
 function UIDropDownMenu_CreateInfo()return {}end
+function UIDropDownMenu_SetSelectedValue()end
 function FauxScrollFrame_GetOffset()return 0 end
 function IsShiftKeyDown()return false end
 function IsControlKeyDown()return false end
@@ -138,7 +141,13 @@ function GetLanguageByIndex()return 'Common',7 end
 function UnitSex()return 2 end
 function IsMounted()return false end
 function UnitAffectingCombat()return false end
-function GetInventoryItemLink()return nil end
+TEST_INVENTORY={}
+TEST_EQUIP_ATTEMPTS=0
+function GetInventoryItemLink(_,slot)return TEST_INVENTORY[slot] end
+function EquipItemByName(item,slot)
+ TEST_EQUIP_ATTEMPTS=TEST_EQUIP_ATTEMPTS+1
+ if not TEST_EQUIP_BLOCKED then TEST_INVENTORY[slot]=item end
+end
 function GetInventoryItemTexture()return nil end
 function GetInventorySlotInfo()return 1 end
 function GetHonorCurrency()return 0 end

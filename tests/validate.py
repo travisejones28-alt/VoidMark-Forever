@@ -41,7 +41,13 @@ for p in ROOT.rglob('*'):
         path=re.sub(r'\\+','/',match[1])
         if path.endswith('/') : continue
         assert (ROOT/path).exists(),f'{p}: missing asset {path}'
+for name in re.findall(r'"([a-z]+\.ogg)"',(ROOT/'KillEffects.lua').read_text()):
+    assert (ROOT/'Sounds'/'KillEffects'/name).is_file(),f'Missing kill sound: {name}'
 LUA.execute((Path(__file__).parent/'client_mock.lua').read_text())
+# Upgrade from a pre-consent installation with an old external account link.
+LUA.execute('''VoidMarkDB={TaliaaGankSync={autoPair=true,peerGameAccountID=99,
+    peerSessionToken="legacy",peerName="Old-One",peerBattleTag="Old#1",
+    lastKnownPeerGameAccountID=99}}''')
 def run(file):
     LUA.globals().TEST_SOURCE=(ROOT/file).read_text()
     LUA.globals().TEST_NAME=file
@@ -69,4 +75,8 @@ Emit("PLAYER_ENTERING_WORLD")
 Drain()
 ''')
 LUA.execute((Path(__file__).parent/'regressions.lua').read_text())
+LUA.execute((Path(__file__).parent/'feature_regressions.lua').read_text())
+# Audio settings and cancellation run in isolation, using the real module.
+audio=LuaRuntime(unpack_returned_tuples=True)
+audio.execute((Path(__file__).parent/'kill_effects_regression.lua').read_text())
 print(f'PASS: {count} Lua files; XML scripts, load graph/assets, startup and client regressions')

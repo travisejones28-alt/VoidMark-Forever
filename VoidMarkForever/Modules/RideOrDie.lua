@@ -236,6 +236,44 @@ function TRD:SaveSet(name)
     Chat(name .. " set saved.")
 end
 
+local function SetMatchesEquipped(set)
+    if type(set) ~= "table" then return false end
+    for _, slot in ipairs(SLOT_IDS) do
+        local desired = set[slot]
+        if desired then
+            local current = CurrentItem(slot)
+            if current ~= desired then
+                -- Item links can have different formatting; compare item IDs
+                -- when both links are available.
+                local wantedID = tonumber(tostring(desired):match("item:(%d+)"))
+                local currentID = current and tonumber(tostring(current):match("item:(%d+)"))
+                if not wantedID or wantedID ~= currentID then return false end
+            end
+        end
+    end
+    return true
+end
+
+-- Sap/other loss-of-control effects can defer equipment changes without combat.
+-- Keep the request queued until the actual equipment matches the requested set.
+function TRD:QueueGearRecheck(delay)
+    if self.gearRecheckScheduled then return end
+    self.gearRecheckScheduled = true
+    C_Timer.After(delay or 0.5, function()
+        TRD.gearRecheckScheduled = nil
+        if not TRD.db or not TRD.db.enabled or InCombat()
+            or VMAPI.UnitIsDeadOrGhost("player") or VMAPI.UnitOnTaxi("player") then return end
+        local mode = TRD:GetDesiredMode()
+        local name = mode and TRD:GetSetForMode(mode)
+        if mode == "ground" and TRD.db.pendingGroundSet and TRD.db.sets[TRD.db.pendingGroundSet] then
+            name = TRD.db.pendingGroundSet
+        end
+        if name and not SetMatchesEquipped(TRD.db.sets[name]) then
+            TRD:ApplyMode(mode, true)
+        end
+    end)
+end
+
 function TRD:EquipSet(name, quiet)
     name = NormalizeName(name)
     local set = self.db.sets[name]
@@ -263,6 +301,13 @@ function TRD:EquipSet(name, quiet)
             EquipByName(desired, slot)
             changed = changed + 1
         end
+    end
+
+    if not SetMatchesEquipped(set) then
+        self.db.pendingMode = (name == self:GetRidingSetName()) and "riding" or "ground"
+        if self.db.pendingMode == "ground" then self.db.pendingGroundSet = name end
+        self:RefreshUI()
+        return false
     end
 
     self.db.pendingMode = nil
@@ -843,15 +888,22 @@ TRD:SetScript("OnEvent", function(self, event, ...)
         C_Timer.After(0.5, function()
             if not TRD.db then return end
             TRD.wasMounted = IsRealMount()
+            TRD:QueueGearRecheck(0.5)
             TRD:RefreshUI()
         end)
 
     elseif event == "PLAYER_MOUNT_DISPLAY_CHANGED" then
         self:CheckMountState(false)
+        self:QueueGearRecheck(0.45)
 
     elseif event == "UNIT_AURA" then
         local unit = ...
-        if unit == "player" then self:CheckMountState(false) end
+        if unit == "player" then
+            self:CheckMountState(false)
+            if self.db and self.db.enabled and not IsRealMount() then
+                self:QueueGearRecheck(0.35)
+            end
+        end
 
     elseif event == "PLAYER_REGEN_DISABLED" then
         if self.db.enabled then
@@ -872,6 +924,7 @@ TRD:SetScript("OnEvent", function(self, event, ...)
             self.db.pendingMode = desired
             if desired then
                 self:ApplyMode(desired)
+                self:QueueGearRecheck(0.5)
             end
         end
         self:RefreshUI()

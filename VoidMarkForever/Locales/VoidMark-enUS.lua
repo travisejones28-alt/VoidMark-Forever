@@ -5,6 +5,7 @@ if not L then return end
 
 -- Configuration
 L["VoidMark"] = "VoidMark"
+L["ToDebugString"] = "ToDebugString"
 L["Version"] = "Version"
 L["VoidMark Option"] = "VoidMark"
 L["Profiles"] = "Profiles"

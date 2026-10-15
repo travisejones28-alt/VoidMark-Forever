@@ -6,7 +6,7 @@ local fonts = SM:List("font")
 local _
 
 VoidMark = LibStub("AceAddon-3.0"):NewAddon("VoidMark", "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0")
-VoidMark.Version = "1.0.0"
+VoidMark.Version = "1.1.0"
 VoidMark.DatabaseVersion = "1.1"
 VoidMark.Signature = "[VoidMark]"
 VoidMark.ButtonLimit = 15
@@ -2716,7 +2716,7 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 
 			local recentDamage = VoidMark.GankRecentDamage[dstName]
 			local recentlyEngaged = recentDamage
-				and (GetTime() - recentDamage) <= TALIAA_GANK_CREDIT_WINDOW
+				and (GetTime() - recentDamage) <= VOIDMARK_GANK_CREDIT_WINDOW
 
 			if isPlayerVictim and isEnemyVictim
 				and (recentlyEngaged or VoidMark.ThreatCombat[dstName])

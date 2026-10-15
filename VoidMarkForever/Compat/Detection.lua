@@ -13,7 +13,7 @@ VMF.Interface = tonumber(interfaceVersion) or 0
 VMF.GUIDToName = VMF.GUIDToName or {}
 VMF.NameToGUID = VMF.NameToGUID or {}
 VMF.LastSeen = VMF.LastSeen or {}
-VMF.Build = "1.0.0"
+VMF.Build = "1.1.0"
 
 if not VMF.IsForever then
     return
