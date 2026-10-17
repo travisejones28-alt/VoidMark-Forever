@@ -90,3 +90,17 @@ VoidMark:SetWindowTop(window)
 setmetatable(window,originalMeta)
 window.Above=above
 assert(VoidMark.MainWindow:GetFrameStrata()=="LOW","Internal raise must not promote the HUD")
+
+-- Unknown windows may show before stack registration; duplicate registration is harmless.
+assert(pcall(VoidMark.SetWindowTop,VoidMark,{}),"Unregistered window raised through nil stack link")
+local previousBelow=VoidMark.MainWindow.Below
+VoidMark:AddWindow(VoidMark.MainWindow)
+assert(VoidMark.MainWindow.Below==previousBelow and VoidMark.MainWindow.Below~=VoidMark.MainWindow,"Duplicate registration created a cycle")
+assert(VoidMark.MainWindow.TitleBar:GetFrameStrata()==VoidMark.MainWindow:GetFrameStrata(),"Title bar fell behind its panel")
+local saved=0;local oldSave=VoidMark.SaveMainWindowPosition
+VoidMark.SaveMainWindowPosition=function() saved=saved+1 end
+VoidMark.MainWindow.isMoving=true
+VoidMark.MainWindow:GetScript("OnHide")(VoidMark.MainWindow)
+assert(saved==1 and not VoidMark.MainWindow.isMoving,"Interrupted drag did not save the main tracker anchor")
+VoidMark.SaveMainWindowPosition=oldSave
+print("PASS: window stack idempotence, title layer and interrupted drag persistence")

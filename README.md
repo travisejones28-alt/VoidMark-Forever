@@ -1,5 +1,8 @@
 # VoidMark
 
+Current hardening release: see [HARDENING.md](HARDENING.md) for confirmed fixes, validation and in-game checks. Download the rebuilt addon from `dist/`.
+
+
 WoW Forever implementation of VoidMark. Version 1.1.0 ports the Classic Era changes through `f6e6218`, preserving the working Forever client adapters, complete character identities and existing saved data. Classic Era remains a read-only functionality reference.
 
 ## Version 1.1.0

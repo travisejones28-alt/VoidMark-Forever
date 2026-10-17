@@ -41,6 +41,7 @@ function VoidMark:CreateFrame(Name, Title, Height, Width, ShowFunc, HideFunc)
 		if (self.isMoving) then
 			self:StopMovingOrSizing();
 			self.isMoving = false;
+			if self==VoidMark.MainWindow then VoidMark:SaveMainWindowPosition() end
 		end
 		if (self.HideFunc) then
 			self:HideFunc()
@@ -72,7 +73,8 @@ function VoidMark:CreateFrame(Name, Title, Height, Width, ShowFunc, HideFunc)
 --	theFrame.TitleBar = CreateFrame("Frame", "TestFrame", theFrame)
 --	theFrame.TitleBar = CreateFrame("Frame", "TestFrame", theFrame, "BackdropTemplate")	
 	theFrame.TitleBar = CreateFrame("Frame", "VoidMarkTitleBarFrame", theFrame, "BackdropTemplate")
-	theFrame.TitleBar:SetFrameStrata("BACKGROUND")
+	theFrame.TitleBar:SetFrameStrata(theFrame:GetFrameStrata())
+	theFrame.TitleBar:SetFrameLevel(theFrame:GetFrameLevel()+1)
 	if not VoidMark.db.profile.InvertVoidMark then	
 		theFrame.TitleBar:SetPoint("TOPLEFT", theFrame, "TOPLEFT", 0, -11)
 		theFrame.TitleBar:SetPoint("TOPRIGHT", theFrame, "TOPRIGHT", 0, -11)

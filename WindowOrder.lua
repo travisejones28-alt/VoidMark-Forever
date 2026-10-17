@@ -1,6 +1,7 @@
 local TopWindow
 local AddToScale = {}
 local AllWindows = {}
+local RegisteredWindows = {}
 local LevelDiff
 local _
 
@@ -17,11 +18,13 @@ function VoidMark:SetLevel(frame, level)
 end
 
 function VoidMark:InitOrder()
+	if TopWindow then return end
 	TopWindow = UIParent
 	VoidMark:AddWindow(VoidMark.MainWindow)
 end
 
 function VoidMark:SetWindowTop(window)
+	if not window or not RegisteredWindows[window] then return end
 	-- Raising inside VoidMark's own stack must never promote the HUD over dialogs.
 	if window == VoidMark.MainWindow and not InCombatLockdown() then window:SetFrameStrata("LOW") end
 	if InCombatLockdown() then
@@ -46,6 +49,9 @@ function VoidMark:SetWindowTop(window)
 end
 
 function VoidMark:AddWindow(window)
+	if not window or RegisteredWindows[window] then return end
+	TopWindow = TopWindow or UIParent
+	RegisteredWindows[window] = true
 	window.Below = TopWindow
 	TopWindow.Above = window
 	window.Above = nil

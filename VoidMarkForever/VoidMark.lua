@@ -6,7 +6,7 @@ local fonts = SM:List("font")
 local _
 
 VoidMark = LibStub("AceAddon-3.0"):NewAddon("VoidMark", "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0")
-VoidMark.Version = "1.1.1"
+VoidMark.Version = "1.1.2"
 VoidMark.DatabaseVersion = "1.1"
 VoidMark.Signature = "[VoidMark]"
 VoidMark.ButtonLimit = 15
