@@ -490,8 +490,8 @@ function VoidMark:CreateMainWindow()
 		theFrame:SetResizable(true)
 --		theFrame:SetMinResize(90, 34)
 --		theFrame:SetMaxResize(300, 264)
-		-- Match Classic Era: maximum tracker width is 300 UI units.
-		theFrame:SetResizeBounds(90, 34, 300, 264)
+		-- User-selected Beta tracker width ceiling.
+		theFrame:SetResizeBounds(90, 34, 450, 264)
 		theFrame:SetScript("OnSizeChanged",
 		function(self)
 			if (self.isResizing) then

@@ -34,3 +34,7 @@ The old MainWindow SetResizeBounds maximum was still 300, so earlier width reque
 ## 1.1.7 Era width ceiling
 
 At user request, restored the maximum tracker width to 300 UI units, matching Era. Removed automatic width enlargement and normalized oversized saved widths to 300. Smaller custom widths persist. Artwork and the existing 264-unit height ceiling are retained. Bounds-enforcing regressions cover the ceiling and profile restoration.
+
+## 1.1.8 Beta width ceiling
+
+Set the maximum tracker width to 450 UI units at user request. Saved widths below that limit remain unchanged, so the window can be dragged wider as desired. The 264-unit height ceiling remains unchanged. Regression tests enforce the 450-unit maximum and saved custom width restoration.

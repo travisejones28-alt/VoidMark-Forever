@@ -20,7 +20,7 @@ VM.HEADER_HEIGHT = 106
 VM.ROW_TOP_OFFSET = 108
 VM.DEFAULT_WIDTH_SCALE = 1.00
 VM.MIN_MAIN_WIDTH = 300
-VM.DEFAULT_MAIN_WIDTH = 300
+VM.DEFAULT_MAIN_WIDTH = 450
 
 local function Chat(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cffb86cff[VoidMark]|r " .. tostring(msg))
@@ -319,7 +319,7 @@ function VM:ApplyOneTimeCompactWidth()
     local f = VoidMark.MainWindow
     local profile = VoidMark.db and VoidMark.db.profile
     if not f or not profile or not profile.MainWindow or InCombatLockdown() then return end
-    -- Respect the Era width ceiling without enlarging saved custom widths.
+    -- Respect the configured width ceiling without enlarging saved custom widths.
     local currentWidth = f:GetWidth()
     local savedWidth = tonumber(profile.MainWindow.Position.w) or currentWidth
     if savedWidth > VM.DEFAULT_MAIN_WIDTH or currentWidth > VM.DEFAULT_MAIN_WIDTH then
