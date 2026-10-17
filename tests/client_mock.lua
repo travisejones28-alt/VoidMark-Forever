@@ -62,7 +62,11 @@ obj=function(name)
    Show=function(s)s.shown=true end,Hide=function(s)s.shown=false end,IsShown=function(s)return s.shown end,IsEnabled=function()return true end,
    GetName=function(s)return s.name end,GetParent=function(s)return s.parent or UIParent end,
    GetWidth=function(s)return s.width end,GetHeight=function(s)return s.height end,
-   SetWidth=function(s,n)s.width=n end,SetHeight=function(s,n)s.height=n end,SetSize=function(s,w,h)s.width=w;s.height=h end,
+   SetResizeBounds=function(s,minW,minH,maxW,maxH)
+    s.minWidth=minW;s.maxWidth=maxW
+    s:SetWidth(s.width)
+   end,
+   SetWidth=function(s,n)s.width=s.maxWidth and math.max(s.minWidth,math.min(s.maxWidth,n)) or n end,SetHeight=function(s,n)s.height=n end,SetSize=function(s,w,h)s.width=w;s.height=h end,
    GetPoint=function()return "CENTER",UIParent,"CENTER",0,0 end,GetEffectiveScale=function()return 1 end,
    GetScale=function()return 1 end,GetAlpha=function()return 1 end,GetFrameLevel=function()return 1 end,
    SetFrameStrata=function(s,v)s.strata=v end,GetFrameStrata=function(s)return s.strata or 'MEDIUM' end,

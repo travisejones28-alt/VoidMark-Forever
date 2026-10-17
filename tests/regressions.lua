@@ -122,12 +122,24 @@ local profile=VoidMark.db.profile
 local oldPosition=VoidMark.RestoreMainWindowPosition
 VoidMark.RestoreMainWindowPosition=function(_,x,y,w,h) main:SetSize(w,h) end
 local function checkWidth(before,after)
- profile.VoidMarkGeneratedHeaderV1=true;profile.VoidMarkHeaderSizeV2=true;profile.VoidMarkHeaderSizeV3=true;profile.VoidMarkHeaderSizeV4=nil
+ profile.VoidMarkGeneratedHeaderV1=true;profile.VoidMarkHeaderSizeV2=true;profile.VoidMarkHeaderSizeV3=true;profile.VoidMarkHeaderSizeV4=true;profile.VoidMarkHeaderSizeV5=nil
  main:SetWidth(before);skin:ApplyOneTimeCompactWidth()
  assert(main:GetWidth()==after,"Header width migration lost sizing preference")
  main:SetWidth(after+5);skin:ApplyOneTimeCompactWidth()
  assert(main:GetWidth()==after+5,"Header migration repeated after resize")
 end
-checkWidth(360,530);checkWidth(430,530);checkWidth(480,530);checkWidth(560,560);checkWidth(320,320)
+checkWidth(300,530);checkWidth(360,530);checkWidth(430,530);checkWidth(480,530);checkWidth(560,560);checkWidth(320,320)
 VoidMark.RestoreMainWindowPosition=oldPosition
 print("PASS: visible header artwork, expanded compact width and custom size preservation")
+
+-- Exercise the actual restore function, not the width-migration test stub.
+profile.VoidMarkHeaderSizeV4=true;profile.VoidMarkHeaderSizeV5=nil
+main:SetWidth(300)
+skin:ApplyOneTimeCompactWidth()
+assert(main:GetWidth()==530 and profile.MainWindow.Position.w==530,"Real frame bounds still clamp repaired width")
+VoidMark:HandleProfileChanges()
+assert(main:GetWidth()==530,"Profile restoration lost the widened tracker")
+main:SetWidth(560);VoidMark:SaveMainWindowPosition()
+VoidMark:HandleProfileChanges()
+assert(main:GetWidth()==560,"Custom resized width did not survive profile restoration")
+print("PASS: real width bounds, prior clamped-profile repair and full profile restoration")

@@ -26,3 +26,7 @@ Expanded default tracker width from 430 to 480 UI units following the Era compar
 ## 1.1.5 width adjustment
 
 Expanded the default tracker to 530 UI units. Existing 360/430/480 default widths upgrade once, including profiles updated by 1.1.4. Other custom widths remain saved; tests cover every default upgrade path and subsequent resizing.
+
+## 1.1.6 actual width-limit correction
+
+The old MainWindow SetResizeBounds maximum was still 300, so earlier width requests were clamped by the client. Raised that maximum to 600, matching profile validation. A one-time migration also repairs saved 300-unit clamped widths even after earlier size migrations. The client mock now enforces width bounds: the previous code fails its sizing regression with this behavior. Added tests using the real position restoration and profile-change lifecycle, including persistence of a custom 560-unit width. Earlier mock-only width pass results did not establish that the real client accepted the requested size.
