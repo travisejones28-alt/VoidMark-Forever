@@ -22,7 +22,7 @@ VM.HEADER_HEIGHT = 106
 VM.ROW_TOP_OFFSET = 108
 VM.DEFAULT_WIDTH_SCALE = 1.00
 VM.MIN_MAIN_WIDTH = 300
-VM.DEFAULT_MAIN_WIDTH = 430
+VM.DEFAULT_MAIN_WIDTH = 480
 
 local function Chat(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cffb86cff[VoidMark]|r " .. tostring(msg))
@@ -386,16 +386,16 @@ function VM:ApplyOneTimeCompactWidth()
     local f = VoidMark.MainWindow
     local profile = VoidMark.db and VoidMark.db.profile
     if not f or not profile or not profile.MainWindow or InCombatLockdown() then return end
-    if profile.VoidMarkHeaderSizeV2 then return end
+    if profile.VoidMarkHeaderSizeV3 then return end
 
     -- Repair the old forced compact width once; keep user-resized widths.
     local currentWidth = f:GetWidth() or profile.MainWindow.Position.w or VM.DEFAULT_MAIN_WIDTH
     local newWidth = currentWidth
-    if not profile.VoidMarkGeneratedHeaderV1 or math.abs(currentWidth - 360) < 1 then
+    if not profile.VoidMarkGeneratedHeaderV1 or math.abs(currentWidth - 360) < 1 or math.abs(currentWidth - 430) < 1 then
         newWidth = math.max(currentWidth, VM.DEFAULT_MAIN_WIDTH)
     end
     profile.VoidMarkGeneratedHeaderV1 = true
-    profile.VoidMarkHeaderSizeV2 = true
+    profile.VoidMarkHeaderSizeV3 = true
 
     if newWidth ~= currentWidth then
         local x = f:GetLeft()
