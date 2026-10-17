@@ -47,3 +47,7 @@ The runtime boundary preserves the working Forever visible-unit detection, compl
 ## Validation
 
 Install the pinned test runtime with `python -m pip install -r tests/requirements.txt`, then run `python tests/validate.py` from the repository root. It compiles every addon Lua file under Lua 5.1, parses XML/embedded scripts, verifies the TOC/include graph and packaged assets, and exercises startup plus mocked native kills/deduplication, unconscious/non-group rejection, full-name identity, canonical W/L, loss deduplication, character damage isolation, restricted/secret event handling, both Distract event paths, KOS matching/privacy/banner timing, explicit pairing and legacy migration, popup settings, frame strata, sound settings/cancellation, and post-Sap equipment recovery. These checks cannot prove WoW's secure execution, server event semantics or client rendering.
+
+## 1.1.1
+
+The compact VoidMark HUD now uses the LOW UI layer, below normal MEDIUM windows such as Nexus and bags. Showing or raising the tracker inside VoidMark's own window stack preserves that layer. Configuration dialogs and context menus retain their existing layers.

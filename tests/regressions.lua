@@ -73,3 +73,20 @@ assert(VoidMarkPerCharDB.IgnoreData['Enemy-One'],'Control-click lost handler arg
 IsControlKeyDown=function()return false end
 VoidMark:ButtonClicked(row,'RightButton')
 assert(VoidMark.VoidMark.ContextMenu:IsShown(),'Native row action menu unavailable')
+
+-- Persistent HUD stays below ordinary MEDIUM application windows, even after raise/show.
+assert(VoidMark.MainWindow:GetFrameStrata()=="LOW","Compact HUD must be below normal windows")
+local window=VoidMark.MainWindow
+local originalMeta=getmetatable(window)
+local above=rawget(window,"Above")
+window.Above=nil
+-- The broad client mock invents objects for unknown fields; real WoW frames
+-- return nil for an absent linked-list neighbour.
+setmetatable(window,{__index=function(self,key)
+ if key=="Above" then return nil end
+ return originalMeta.__index(self,key)
+end})
+VoidMark:SetWindowTop(window)
+setmetatable(window,originalMeta)
+window.Above=above
+assert(VoidMark.MainWindow:GetFrameStrata()=="LOW","Internal raise must not promote the HUD")

@@ -23,6 +23,8 @@ function VoidMark:InitOrder()
 end
 
 function VoidMark:SetWindowTop(window)
+	-- Raising inside VoidMark's own stack must never promote the HUD over dialogs.
+	if window == VoidMark.MainWindow and not InCombatLockdown() then window:SetFrameStrata("LOW") end
 	if InCombatLockdown() then
 		return
 	end

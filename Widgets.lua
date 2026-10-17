@@ -6,6 +6,8 @@ function VoidMark:CreateFrame(Name, Title, Height, Width, ShowFunc, HideFunc)
 --	local theFrame = CreateFrame("Frame", Name, UIParent)
 	local theFrame = CreateFrame("Frame", Name, UIParent, "BackdropTemplate")
 
+	-- Persistent tracker panel belongs below normal application windows.
+	if Name == "VoidMark_MainWindow" then theFrame:SetFrameStrata("LOW") end
 	theFrame:ClearAllPoints()
 	theFrame:SetPoint("CENTER", UIParent)
 	theFrame:SetHeight(Height)
