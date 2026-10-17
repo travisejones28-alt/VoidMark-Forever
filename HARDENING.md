@@ -22,3 +22,7 @@ Removed the opaque main-title child backdrop that covered the existing generated
 ## 1.1.4 width adjustment
 
 Expanded default tracker width from 430 to 480 UI units following the Era comparison. A one-time migration widens the old 360/430 defaults, including profiles already migrated by 1.1.3. Other custom widths, height, scale and position remain unchanged. Regression tests cover both upgrade paths, custom widths and subsequent resizing.
+
+## 1.1.5 width adjustment
+
+Expanded the default tracker to 530 UI units. Existing 360/430/480 default widths upgrade once, including profiles updated by 1.1.4. Other custom widths remain saved; tests cover every default upgrade path and subsequent resizing.

@@ -122,12 +122,12 @@ local profile=VoidMark.db.profile
 local oldPosition=VoidMark.RestoreMainWindowPosition
 VoidMark.RestoreMainWindowPosition=function(_,x,y,w,h) main:SetSize(w,h) end
 local function checkWidth(before,after)
- profile.VoidMarkGeneratedHeaderV1=true;profile.VoidMarkHeaderSizeV2=true;profile.VoidMarkHeaderSizeV3=nil
+ profile.VoidMarkGeneratedHeaderV1=true;profile.VoidMarkHeaderSizeV2=true;profile.VoidMarkHeaderSizeV3=true;profile.VoidMarkHeaderSizeV4=nil
  main:SetWidth(before);skin:ApplyOneTimeCompactWidth()
  assert(main:GetWidth()==after,"Header width migration lost sizing preference")
  main:SetWidth(after+5);skin:ApplyOneTimeCompactWidth()
  assert(main:GetWidth()==after+5,"Header migration repeated after resize")
 end
-checkWidth(360,480);checkWidth(430,480);checkWidth(520,520);checkWidth(320,320)
+checkWidth(360,530);checkWidth(430,530);checkWidth(480,530);checkWidth(560,560);checkWidth(320,320)
 VoidMark.RestoreMainWindowPosition=oldPosition
 print("PASS: visible header artwork, expanded compact width and custom size preservation")
