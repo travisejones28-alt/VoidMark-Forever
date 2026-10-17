@@ -492,7 +492,7 @@ function VoidMark:CreateMainWindow()
 --		theFrame:SetMinResize(90, 34)
 --		theFrame:SetMaxResize(300, 264)
 		-- User-selected Beta tracker width ceiling.
-		theFrame:SetResizeBounds(90, 34, 450, 264)
+		theFrame:SetResizeBounds(90, 34, 400, 264)
 		theFrame:SetScript("OnSizeChanged",
 		function(self)
 			if (self.isResizing) then

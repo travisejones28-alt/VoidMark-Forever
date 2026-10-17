@@ -38,3 +38,7 @@ At user request, restored the maximum tracker width to 300 UI units, matching Er
 ## 1.1.8 Beta width ceiling
 
 Set the maximum tracker width to 450 UI units at user request. Saved widths below that limit remain unchanged, so the window can be dragged wider as desired. The 264-unit height ceiling remains unchanged. Regression tests enforce the 450-unit maximum and saved custom width restoration.
+
+## 1.1.9 Beta width ceiling
+
+Adjusted the maximum tracker width to 400 UI units at user request. Smaller saved widths remain unchanged; oversized saved widths clamp to 400. Bounds and profile-restoration regression tests updated.

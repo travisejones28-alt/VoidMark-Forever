@@ -1,6 +1,6 @@
 ## Interface: 16001
 ## Title: VoidMark
-## Version: 1.1.8
+## Version: 1.1.9
 ## Notes: VoidMark compact Shadow Priest WPvP intelligence and encounter tracking.
 ## Creator: Taliaa
 ## Author: Taliaa
