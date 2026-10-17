@@ -491,8 +491,8 @@ function VoidMark:CreateMainWindow()
 		theFrame:SetResizable(true)
 --		theFrame:SetMinResize(90, 34)
 --		theFrame:SetMaxResize(300, 264)
-		-- Allow the branded header width; the legacy 300-unit cap clamped all upgrades.
-		theFrame:SetResizeBounds(90, 34, 600, 264)
+		-- Match Classic Era: maximum tracker width is 300 UI units.
+		theFrame:SetResizeBounds(90, 34, 300, 264)
 		theFrame:SetScript("OnSizeChanged",
 		function(self)
 			if (self.isResizing) then

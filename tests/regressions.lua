@@ -119,27 +119,14 @@ main.TitleBar.SetBackdrop=oldBackdrop
 assert(backdropCalls==1,"Skin did not clear the opaque child backdrop")
 assert(main.VoidMarkGeneratedHeader:GetHeight()==100,"Artwork does not fit expanded header")
 local profile=VoidMark.db.profile
-local oldPosition=VoidMark.RestoreMainWindowPosition
-VoidMark.RestoreMainWindowPosition=function(_,x,y,w,h) main:SetSize(w,h) end
-local function checkWidth(before,after)
- profile.VoidMarkGeneratedHeaderV1=true;profile.VoidMarkHeaderSizeV2=true;profile.VoidMarkHeaderSizeV3=true;profile.VoidMarkHeaderSizeV4=true;profile.VoidMarkHeaderSizeV5=nil
- main:SetWidth(before);skin:ApplyOneTimeCompactWidth()
- assert(main:GetWidth()==after,"Header width migration lost sizing preference")
- main:SetWidth(after+5);skin:ApplyOneTimeCompactWidth()
- assert(main:GetWidth()==after+5,"Header migration repeated after resize")
-end
-checkWidth(300,530);checkWidth(360,530);checkWidth(430,530);checkWidth(480,530);checkWidth(560,560);checkWidth(320,320)
-VoidMark.RestoreMainWindowPosition=oldPosition
-print("PASS: visible header artwork, expanded compact width and custom size preservation")
-
--- Exercise the actual restore function, not the width-migration test stub.
-profile.VoidMarkHeaderSizeV4=true;profile.VoidMarkHeaderSizeV5=nil
-main:SetWidth(300)
+main:SetWidth(530)
+assert(main:GetWidth()==300,"Tracker exceeded Era width maximum")
+profile.MainWindow.Position.w=530
 skin:ApplyOneTimeCompactWidth()
-assert(main:GetWidth()==530 and profile.MainWindow.Position.w==530,"Real frame bounds still clamp repaired width")
+assert(main:GetWidth()==300 and profile.MainWindow.Position.w==300,"Oversized saved width was not normalized")
 VoidMark:HandleProfileChanges()
-assert(main:GetWidth()==530,"Profile restoration lost the widened tracker")
-main:SetWidth(560);VoidMark:SaveMainWindowPosition()
+assert(main:GetWidth()==300,"Restored tracker exceeded Era width maximum")
+main:SetWidth(250);VoidMark:SaveMainWindowPosition()
 VoidMark:HandleProfileChanges()
-assert(main:GetWidth()==560,"Custom resized width did not survive profile restoration")
-print("PASS: real width bounds, prior clamped-profile repair and full profile restoration")
+assert(main:GetWidth()==250,"Custom width below maximum did not survive restoration")
+print("PASS: visible artwork, Era width maximum and custom width restoration")
