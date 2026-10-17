@@ -14,3 +14,7 @@ Validation: all **90 Lua source files** compile under Lua 5.1; TOC/XML/assets, f
 Installable ZIP: `dist/VoidMarkForever.zip`; the packaging check compares canonical sources including libraries/assets. Run `python -X utf8 tests/validate.py` with `lupa==2.8`.
 
 In-game: open/close and drag the compact tracker; hide it while moving and reload; open its existing settings/context menus; alternate focus among Nexus, Market, stock bags and world map; verify the tracker/title are covered. Existing combat, detection, audio, encounter, gear and manually paired sync behavior require live-client testing; this review did not transmit messages or pair clients. Historical encounter data remains retained rather than being automatically trimmed.
+
+## 1.1.3 header correction
+
+Removed the opaque main-title child backdrop that covered the existing generated artwork. Expanded header geometry to 106 units and repaired the old forced 360-unit width to 430 once. Custom widths and later resizing remain intact. Added regressions for backdrop occlusion, artwork height and width migration. No saved combat data is reset.

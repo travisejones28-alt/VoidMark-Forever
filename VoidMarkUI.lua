@@ -15,13 +15,12 @@ VM.ROW_UNKNOWN = {0.075, 0.075, 0.095}
 VM.ROW_KOS = {0.38, 0.035, 0.05}
 VM.ROW_STEALTH = {0.20, 0.045, 0.31}
 
--- Compact header geometry. The logo gets a little more vertical breathing room,
--- while the window is nudged slightly narrower once per profile.
-VM.HEADER_HEIGHT = 88
-VM.ROW_TOP_OFFSET = 90
+-- Roomier header geometry; existing custom widths remain user-controlled.
+VM.HEADER_HEIGHT = 106
+VM.ROW_TOP_OFFSET = 108
 VM.DEFAULT_WIDTH_SCALE = 1.00
 VM.MIN_MAIN_WIDTH = 300
-VM.DEFAULT_MAIN_WIDTH = 360
+VM.DEFAULT_MAIN_WIDTH = 430
 
 local function Chat(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cffb86cff[VoidMark]|r " .. tostring(msg))
@@ -320,14 +319,16 @@ function VM:ApplyOneTimeCompactWidth()
     local f = VoidMark.MainWindow
     local profile = VoidMark.db and VoidMark.db.profile
     if not f or not profile or not profile.MainWindow or InCombatLockdown() then return end
-    if profile.VoidMarkGeneratedHeaderV1 then return end
+    if profile.VoidMarkHeaderSizeV2 then return end
 
-    profile.VoidMarkGeneratedHeaderV1 = true
+    -- Repair the old forced compact width once; keep user-resized widths.
     local currentWidth = f:GetWidth() or profile.MainWindow.Position.w or VM.DEFAULT_MAIN_WIDTH
     local newWidth = currentWidth
-    if currentWidth > VM.DEFAULT_MAIN_WIDTH then
-        newWidth = VM.DEFAULT_MAIN_WIDTH
+    if not profile.VoidMarkGeneratedHeaderV1 or math.abs(currentWidth - 360) < 1 then
+        newWidth = math.max(currentWidth, VM.DEFAULT_MAIN_WIDTH)
     end
+    profile.VoidMarkGeneratedHeaderV1 = true
+    profile.VoidMarkHeaderSizeV2 = true
 
     if newWidth ~= currentWidth then
         local x = f:GetLeft()
@@ -361,14 +362,9 @@ function VM:ApplyMainSkin()
         f.TitleBar:SetPoint("TOPLEFT", f, "TOPLEFT", 1, -1)
         f.TitleBar:SetPoint("TOPRIGHT", f, "TOPRIGHT", -1, -1)
         f.TitleBar:SetHeight(VM.HEADER_HEIGHT)
-        f.TitleBar:SetBackdrop({
-            bgFile = "Interface\\Buttons\\WHITE8X8",
-            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-            edgeSize = 8,
-            insets = {left = 2, right = 2, top = 2, bottom = 2},
-        })
-        f.TitleBar:SetBackdropColor(0.025, 0.012, 0.038, 1)
-        f.TitleBar:SetBackdropBorderColor(0.37, 0.10, 0.55, 0.95)
+        -- This child frame sits above the parent artwork. An opaque backdrop
+        -- here obscures the generated header and its parent-owned counters.
+        f.TitleBar:SetBackdrop(nil)
     end
 
     if f.Title then f.Title:Hide() end
@@ -433,7 +429,7 @@ function VM:ApplyMainSkin()
         f.VoidMarkGeneratedHeader = f:CreateTexture(nil, "ARTWORK")
         f.VoidMarkGeneratedHeader:SetPoint("TOPLEFT", f, "TOPLEFT", 3, -3)
         f.VoidMarkGeneratedHeader:SetPoint("TOPRIGHT", f, "TOPRIGHT", -3, -3)
-        f.VoidMarkGeneratedHeader:SetHeight(82)
+        f.VoidMarkGeneratedHeader:SetHeight(VM.HEADER_HEIGHT - 6)
         f.VoidMarkGeneratedHeader:SetTexture("Interface\\AddOns\\VoidMark\\Textures\\VoidMarkGeneratedHeader.tga")
         f.VoidMarkGeneratedHeader:SetTexCoord(0, 1, 0, 1)
     end

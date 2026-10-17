@@ -104,3 +104,30 @@ VoidMark.MainWindow:GetScript("OnHide")(VoidMark.MainWindow)
 assert(saved==1 and not VoidMark.MainWindow.isMoving,"Interrupted drag did not save the main tracker anchor")
 VoidMark.SaveMainWindowPosition=oldSave
 print("PASS: window stack idempotence, title layer and interrupted drag persistence")
+
+-- The main title child must not paint over the parent-owned header texture.
+local skin=VoidMark.VoidMark
+local main=VoidMark.MainWindow
+local oldBackdrop=main.TitleBar.SetBackdrop
+local backdropCalls=0
+main.TitleBar.SetBackdrop=function(_,value)
+ backdropCalls=backdropCalls+1
+ assert(value==nil,"Title child obscures generated header")
+end
+skin:ApplyMainSkin()
+main.TitleBar.SetBackdrop=oldBackdrop
+assert(backdropCalls==1,"Skin did not clear the opaque child backdrop")
+assert(main.VoidMarkGeneratedHeader:GetHeight()==100,"Artwork does not fit expanded header")
+local profile=VoidMark.db.profile
+local oldPosition=VoidMark.RestoreMainWindowPosition
+VoidMark.RestoreMainWindowPosition=function(_,x,y,w,h) main:SetSize(w,h) end
+local function checkWidth(before,after)
+ profile.VoidMarkGeneratedHeaderV1=true;profile.VoidMarkHeaderSizeV2=nil
+ main:SetWidth(before);skin:ApplyOneTimeCompactWidth()
+ assert(main:GetWidth()==after,"Header width migration lost sizing preference")
+ main:SetWidth(after+5);skin:ApplyOneTimeCompactWidth()
+ assert(main:GetWidth()==after+5,"Header migration repeated after resize")
+end
+checkWidth(360,430);checkWidth(480,480);checkWidth(320,320)
+VoidMark.RestoreMainWindowPosition=oldPosition
+print("PASS: visible header artwork, expanded compact width and custom size preservation")
