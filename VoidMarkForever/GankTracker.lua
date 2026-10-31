@@ -4637,6 +4637,10 @@ combatMonitor:SetScript("OnEvent", function(_, event, ...)
         local _, subEvent, _, sourceGUID, sourceName, sourceFlags, _, destGUID, destName, destFlags, _, payload1, payload2, payload3, payload4, payload5 =
             VoidMarkForever.API.CombatLogGetCurrentEventInfo()
 
+        -- Distract (1725) is intentionally unsupported: do not generate alerts
+        -- or pass its combat-log events into the PvP detection path.
+        if tonumber(payload1) == 1725 then return end
+
         -- Personal Rogue safety alert: only fire when Sap actually lands on us.
         -- This runs before the normal CLEU fast-return because aura events are
         -- otherwise intentionally ignored by GankTracker's hot path.
