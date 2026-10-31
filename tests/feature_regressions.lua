@@ -16,37 +16,18 @@ C_Timer.After=function(delay,fn) timers[#timers+1]={delay=delay,fn=fn} end
 local function eq(a,b,label) assert(a==b,label..": "..tostring(a).." ~= "..tostring(b)) end
 local function packet(fields) return table.concat(fields,"\031") end
 
--- Native visible-unit spells work even when CLEU is unavailable. Both paths
--- share the cooldown, complete name and setting; allies/secret IDs stay silent.
+-- Distract is removed: neither native casts nor readable CLEU may alert,
+-- even when an existing SavedVariables setting was enabled.
+VoidMarkDB.VoidMarkDistractAlert=true
+assert(GT.ShowDistractAlert==nil and GT.ObserveDistractCast==nil)
 CLEU=nil
-GT:SetDistractAlertEnabled(true)
 Emit("UNIT_SPELLCAST_SUCCEEDED","target","cast",1725)
-eq(#warnings,1,"native Distract warning")
-assert(warnings[1]:find("Enemy One",1,true),"Distract lost the secondary name")
-eq(sounds[1].channel,"Master","Distract sound channel")
-Emit("UNIT_SPELLCAST_SUCCEEDED","target","duplicate",1725)
-eq(#warnings,1,"native duplicate")
-NOW=NOW+4
-Emit("UNIT_SPELLCAST_SUCCEEDED","player","friendly",1725)
-Emit("UNIT_SPELLCAST_SUCCEEDED","target","secret",SECRET)
-eq(#warnings,1,"friendly or secret cast alerted")
-GT:ToggleDistractAlertEnabled()
-Emit("UNIT_SPELLCAST_SUCCEEDED","target","disabled",1725)
-eq(#warnings,1,"disabled Distract alerted")
-GT:ToggleDistractAlertEnabled()
 COMBATLOG_OBJECT_REACTION_HOSTILE=0x40
 CLEU={NOW,"SPELL_CAST_SUCCESS",false,"Player-1-rogue","Sneaky-Two",0x40,0,"","",0,0,1725,"Distract",1}
 F.ProbeCombatLog()
 Emit("COMBAT_LOG_EVENT_UNFILTERED")
-eq(#warnings,2,"readable CLEU Distract warning")
-assert(warnings[2]:find("Sneaky Two",1,true),"CLEU warning lost full name")
-NOW=NOW+4
-CLEU[6]=0x10
-Emit("COMBAT_LOG_EVENT_UNFILTERED")
-eq(#warnings,2,"friendly CLEU alerted")
-CLEU[6]=0x40; CLEU[12]=SECRET
-Emit("COMBAT_LOG_EVENT_UNFILTERED")
-eq(#warnings,2,"secret CLEU alerted")
+eq(#warnings,0,"removed Distract warning")
+eq(#sounds,0,"removed Distract sound")
 CLEU=nil
 
 -- KOS matches use complete identities, combine names/classes for 10 seconds,
@@ -170,4 +151,4 @@ TEST_IN_COMBAT=false
 
 RaidNotice_AddMessage=oldNotice; PlaySound=oldSound; DEFAULT_CHAT_FRAME.AddMessage=oldChat
 C_ChatInfo.SendAddonMessage=oldSend; C_Timer.After=oldAfter
-print("PASS: native/CLEU Distract, full-name KOS/privacy, pairing upgrade, popup control, frame layering and post-Sap gear recovery")
+print("PASS: Distract removal, full-name KOS/privacy, pairing upgrade, popup control, frame layering and post-Sap gear recovery")
