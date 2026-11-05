@@ -809,8 +809,8 @@ function VoidMark:CreateMainWindow()
 
 	end
 
-	if VoidMark.EnsureCombatSightingsFrame then
-		VoidMark:EnsureCombatSightingsFrame()
+	if VoidMark.EnsureCombatQueueBar then
+		VoidMark:EnsureCombatQueueBar()
 	end
 
 	if not VoidMark.AlertWindow then
@@ -1201,20 +1201,17 @@ function VoidMark:QueueCombatSighting(player, source)
         return
     end
 
-    -- Brand-new combat-only detection: no protected target can legally be bound
-    -- now. Keep the center-screen flag, but also queue it in a slim bar attached
-    -- to VoidMark so it "hits the bar" immediately and then promotes to a normal
-    -- clickable row after combat ends.
+    -- New combat detections are visual rows until secure targeting can be
+    -- assigned after combat ends.
     VoidMark:UpdateCombatQueueBar()
-    VoidMarkCombatNotice(player, playerData, isKOS)
 end
 
 function VoidMark:ClearCombatSightings()
     VoidMark.CombatSightings = {}
     VoidMark._VoidMarkCombatNoticeAt = {}
 
-    if VoidMark.MainWindow and VoidMark.MainWindow.CombatQueueBar then
-        VoidMark.MainWindow.CombatQueueBar:Hide()
+    if VoidMark.CombatNearbyRows then
+        VoidMark.CombatNearbyRows:Hide()
     end
 
     -- Compatibility cleanup if a frame from an older build happened to exist.
@@ -1235,104 +1232,157 @@ function VoidMark:ClearCombatSightings()
     end
 end
 
+-- Independent, NONSECURE combat list. No protected targeting attributes are changed.
+-- This lets players see and drag combat sightings without combat lockdown errors.
+-- Visual-only combat rows placed inside the existing Nearby list.
+-- Keep these unprotected: secure target macros must never be rebound in combat.
 function VoidMark:EnsureCombatQueueBar()
     if not VoidMark.MainWindow then return nil end
-    local f = VoidMark.MainWindow.CombatQueueBar
-    if not f then
-        f = CreateFrame("Frame", nil, VoidMark.MainWindow, "BackdropTemplate")
-        VoidMark.MainWindow.CombatQueueBar = f
-        f:SetPoint("TOPLEFT", VoidMark.MainWindow, "TOPLEFT", 2, -54)
-        f:SetPoint("TOPRIGHT", VoidMark.MainWindow, "TOPRIGHT", -2, -54)
-        f:SetHeight(math.max(18, VoidMark.db.profile.MainWindow.RowHeight or 18))
-        f:SetFrameLevel(VoidMark.MainWindow:GetFrameLevel() + 70)
-        f:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background" })
-        f:SetBackdropColor(0.10, 0.02, 0.16, 0.94)
-        f.Icon = f:CreateTexture(nil, "ARTWORK")
-        f.Icon:SetSize(14, 14)
-        f.Icon:SetPoint("LEFT", f, "LEFT", 4, 0)
-        f.Icon:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcon_8")
-        f.Text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        f.Text:SetPoint("LEFT", f.Icon, "RIGHT", 4, 0)
-        f.Text:SetPoint("RIGHT", f, "RIGHT", -4, 0)
-        f.Text:SetJustifyH("LEFT")
-        f.Text:SetTextColor(0.86, 0.66, 1.0, 1)
-        f:EnableMouse(false)
-        f:Hide()
+    if self.CombatNearbyRows then return self.CombatNearbyRows end
+    -- The overlay is deliberately nonsecure and blocks mouse clicks on its
+    -- visual-only rows; secure target bindings never change during combat.
+    local overlay = CreateFrame("Frame", nil, UIParent)
+    self.CombatNearbyRows = overlay
+    overlay:SetPoint("TOPLEFT", VoidMark.MainWindow, "TOPLEFT", 2, -90)
+    overlay:SetPoint("TOPRIGHT", VoidMark.MainWindow, "TOPRIGHT", -2, -90)
+    overlay:SetHeight(1)
+    overlay:SetFrameStrata("LOW")
+    overlay:SetFrameLevel(VoidMark.MainWindow:GetFrameLevel() + 10)
+    overlay:EnableMouse(false)
+    overlay.Rows = {}
+    for i = 1, 12 do
+        local bar = CreateFrame("Frame", nil, overlay, "BackdropTemplate")
+        bar:SetPoint("TOPLEFT", overlay, "TOPLEFT", 0, -(i - 1) * 18)
+        bar:SetPoint("TOPRIGHT", overlay, "TOPRIGHT", 0, -(i - 1) * 18)
+        bar:SetHeight(18)
+        bar:SetBackdrop({bgFile = "Interface\\Buttons\\WHITE8X8"})
+        bar:SetBackdropColor(0.20, 0.045, 0.31, 0.98)
+        bar:EnableMouse(true) -- do not let click-through target a different enemy
+        bar.Name = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        bar.Name:SetPoint("LEFT", bar, "LEFT", 4, 0)
+        bar.Name:SetPoint("RIGHT", bar, "RIGHT", -115, 0)
+        bar.Name:SetJustifyH("LEFT")
+        bar.Name:SetWordWrap(false)
+        bar.Level = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        bar.Level:SetPoint("RIGHT", bar, "RIGHT", -78, 0)
+        bar.Level:SetWidth(25)
+        bar.Level:SetJustifyH("RIGHT")
+        bar.Class = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        bar.Class:SetPoint("RIGHT", bar, "RIGHT", -55, 0)
+        bar.Class:SetWidth(20)
+        bar.Class:SetJustifyH("CENTER")
+        bar.Record = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        bar.Record:SetPoint("RIGHT", bar, "RIGHT", -3, 0)
+        bar.Record:SetWidth(48)
+        bar.Record:SetJustifyH("RIGHT")
+        bar.Record:SetTextColor(0.73, 0.64, 0.79, 1)
+        bar:Hide()
+        overlay.Rows[i] = bar
     end
-    return f
+    -- Match the existing Nearby font rather than using the smaller default font.
+    overlay:Hide()
+    return overlay
+end
+
+local function CombatClassIcon(class)
+    local coords = class and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[class]
+    if not coords then return "" end
+    local a = {}
+    for i = 1, 4 do a[i] = math.floor((coords[i] or 0) * 256 + 0.5) end
+    return string.format("|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:16:16:0:0:256:256:%d:%d:%d:%d|t", a[1], a[2], a[3], a[4])
 end
 
 function VoidMark:UpdateCombatQueueBar()
-    local f = VoidMark:EnsureCombatQueueBar()
-    if not f then return end
-
-    local sightings = VoidMark.CombatSightings or {}
-    local newest = nil
-    local count = 0
-    for _, data in pairs(sightings) do
-        count = count + 1
-        if not newest or (data.seenAt or 0) > (newest.seenAt or 0) then
-            newest = data
-        end
-    end
-
-    if not newest then
-        f:Hide()
+    local overlay = self:EnsureCombatQueueBar()
+    if not overlay then return end
+    if not InCombatLockdown() or not self.MainWindow:IsShown()
+        or self.db.profile.CurrentList ~= 1 then
+        overlay:Hide()
         return
     end
-
-    local player = tostring(newest.player or "")
-    local bare = VoidMarkForever.DisplayName(player)
-    local detail = ""
-    if newest.level then detail = detail .. " L" .. tostring(newest.level) end
-    if newest.class then detail = detail .. " " .. tostring(newest.class) end
-    local more = ""
-    if count > 1 then more = "  +" .. tostring(count - 1) end
-
-    if newest.kos then
-        f:SetBackdropColor(0.23, 0.02, 0.05, 0.95)
-        f.Text:SetTextColor(1.0, 0.36, 0.40, 1)
-        f.Text:SetText("KOS QUEUED • " .. bare .. detail .. more)
-    else
-        f:SetBackdropColor(0.10, 0.02, 0.16, 0.94)
-        f.Text:SetTextColor(0.86, 0.66, 1.0, 1)
-        f.Text:SetText("QUEUED • " .. bare .. detail .. more)
+    local now = time()
+    local entries = {}
+    for player, data in pairs(self.CombatSightings or {}) do
+        if now - (data.seenAt or now) <= 30 then
+            local frozen = VoidMarkFindFrozenRow(player)
+            if not (frozen and frozen:IsShown()) then
+                entries[#entries + 1] = data
+            end
+        else
+            self.CombatSightings[player] = nil
+        end
     end
-    f:Show()
+    table.sort(entries, function(a, b) return (a.seenAt or 0) > (b.seenAt or 0) end)
+    -- Place combat sightings immediately AFTER the visible secure rows, not
+    -- over their lower edge. The main protected frame is never resized here.
+    local main = VoidMark.MainWindow
+    local step = (VoidMark.db.profile.MainWindow.RowHeight or 18) + (VoidMark.db.profile.MainWindow.RowSpacing or 0)
+    local top = (VoidMark.VoidMark and VoidMark.VoidMark.ROW_TOP_OFFSET) or 90
+    local secureCount = 0
+    for i, row in ipairs(main.Rows or {}) do
+        if row:IsShown() then secureCount = math.max(secureCount, i) end
+    end
+    overlay:ClearAllPoints()
+    overlay:SetPoint("TOPLEFT", main, "TOPLEFT", 2, -top - secureCount * step)
+    overlay:SetPoint("TOPRIGHT", main, "TOPRIGHT", -2, -top - secureCount * step)
+    for i, bar in ipairs(overlay.Rows) do
+        bar:ClearAllPoints()
+        bar:SetPoint("TOPLEFT", overlay, "TOPLEFT", 0, -(i - 1) * step)
+        bar:SetPoint("TOPRIGHT", overlay, "TOPRIGHT", 0, -(i - 1) * step)
+        bar:SetHeight(VoidMark.db.profile.MainWindow.RowHeight or 18)
+        local standard = main.Rows and main.Rows[1]
+        if standard and standard.LeftText and standard.RightText then
+            local font, size, flags = standard.LeftText:GetFont()
+            if font and size then bar.Name:SetFont(font, size, flags or "") end
+            font, size, flags = standard.RightText:GetFont()
+            if font and size then
+                bar.Level:SetFont(font, size, flags or "")
+                bar.Class:SetFont(font, size, flags or "")
+                bar.Record:SetFont(font, size, flags or "")
+            end
+        end
+    end
+    for i, bar in ipairs(overlay.Rows) do
+        local data = entries[i]
+        if data then
+            local player = data.player
+            local pd = VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData and VoidMarkPerCharDB.PlayerData[player]
+            local class = (pd and pd.class) or data.class
+            local level = (pd and pd.level) or data.level
+            local stealth = self.StealthDetectedUntil and (self.StealthDetectedUntil[player] or 0) > now
+            local name = VoidMarkForever.DisplayName(player)
+            local marker = stealth and "|TInterface\\Icons\\Ability_Stealth:13:13:0:0|t " or ""
+            if data.kos then marker = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:13:13:0:0|t " end
+            bar.Name:SetText(marker .. name)
+            local cc = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
+            bar.Name:SetTextColor(cc and cc.r or 0.92, cc and cc.g or 0.75, cc and cc.b or 1, 1)
+            bar.Level:SetText(level and tostring(level) or "??")
+            bar.Class:SetText(CombatClassIcon(class))
+            local kills, deaths = tonumber(pd and pd.wins) or 0, tonumber(pd and pd.loses) or 0
+            if TaliaaGankRepository and TaliaaGankRepository.GetHistoricalStats then
+                local k, d = TaliaaGankRepository:GetHistoricalStats(player, pd and pd.guid)
+                kills, deaths = math.max(kills, tonumber(k) or 0), math.max(deaths, tonumber(d) or 0)
+            end
+            bar.Record:SetText(string.format("%d-%d", kills, deaths))
+            bar:SetBackdropColor(data.kos and 0.32 or 0.20, 0.035, data.kos and 0.07 or 0.31, 0.98)
+            bar:Show()
+        else
+            bar:Hide()
+        end
+    end
+    if #entries == 0 then overlay:Hide() return end
+    overlay:Show()
+    if not self._CombatNearbyExpiryPending then
+        self._CombatNearbyExpiryPending = true
+        C_Timer.After(1, function()
+            VoidMark._CombatNearbyExpiryPending = false
+            if VoidMark.CombatSightings and next(VoidMark.CombatSightings) then VoidMark:UpdateCombatQueueBar() end
+        end)
+    end
 end
 
-function VoidMark:ShowCombatStealthNotice(player, kind)
-    if not VoidMark.MainWindow then return end
-    local f = VoidMark.MainWindow.CombatStealthNotice
-    if not f then
-        f = CreateFrame("Frame", nil, VoidMark.MainWindow, "BackdropTemplate")
-        VoidMark.MainWindow.CombatStealthNotice = f
-        f:SetPoint("TOPLEFT", VoidMark.MainWindow, "TOPLEFT", 2, -34)
-        f:SetPoint("TOPRIGHT", VoidMark.MainWindow, "TOPRIGHT", -2, -34)
-        f:SetHeight(math.max(18, VoidMark.db.profile.MainWindow.RowHeight or 18))
-        f:SetFrameLevel(VoidMark.MainWindow:GetFrameLevel() + 80)
-        f:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background" })
-        f:SetBackdropColor(0.18, 0.03, 0.28, 0.96)
-        f.Icon = f:CreateTexture(nil, "ARTWORK")
-        f.Icon:SetSize(16, 16)
-        f.Icon:SetPoint("LEFT", f, "LEFT", 3, 0)
-        f.Icon:SetTexture("Interface\\Icons\\Ability_Stealth")
-        f.Text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        f.Text:SetPoint("LEFT", f.Icon, "RIGHT", 4, 0)
-        f.Text:SetPoint("RIGHT", f, "RIGHT", -4, 0)
-        f.Text:SetJustifyH("LEFT")
-        f.Text:SetTextColor(0.78, 0.42, 1.0, 1)
-        f:EnableMouse(false)
-        f:Hide()
-    end
-
-    VoidMark._combatStealthNoticeToken = (VoidMark._combatStealthNoticeToken or 0) + 1
-    local token = VoidMark._combatStealthNoticeToken
-    f.Text:SetText(string.format("%s DETECTED: %s", string.upper(kind or "STEALTH"), tostring(player)))
-    f:Show()
-    C_Timer.After(8, function()
-        if VoidMark._combatStealthNoticeToken == token and f then f:Hide() end
-    end)
+function VoidMark:ShowCombatStealthNotice(player,kind)
+    self:UpdateCombatQueueBar()
 end
 
 function VoidMark:SaveAlertWindowPosition()

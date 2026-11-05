@@ -2,7 +2,7 @@ $ErrorActionPreference = "Continue"
 
 $Here = $PSScriptRoot
 $Startup = [Environment]::GetFolderPath("Startup")
-$ShortcutPath = Join-Path $Startup "VoidMark Automatic Kill Sync.lnk"
+$ShortcutPath = Join-Path $Startup "VoidMark Forever Automatic Kill Sync.lnk"
 
 if (Test-Path -LiteralPath $ShortcutPath) {
     Remove-Item -LiteralPath $ShortcutPath -Force

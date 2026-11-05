@@ -755,8 +755,12 @@ function VM:StyleRow(num, name, desc, opacity)
     end
     row.VoidMarkRecordText:ClearAllPoints()
     row.VoidMarkRecordText:SetPoint("RIGHT", row.StatusBar, "RIGHT", -2, 0)
-    row.VoidMarkRecordText:SetWidth(31)
+    row.VoidMarkRecordText:SetWordWrap(false)
     row.VoidMarkRecordText:SetText(record)
+    -- Fit multi-digit lifetime records (e.g. 14-19) on one line.
+    -- GetStringWidth measures rendered text without counting WoW color codes.
+    local recordWidth = math.max(31, math.ceil(row.VoidMarkRecordText:GetStringWidth() + 5))
+    row.VoidMarkRecordText:SetWidth(recordWidth)
     row.VoidMarkRecordText:SetTextColor(0.73, 0.64, 0.79, opacity or 1)
 
     if not row.VoidMarkClassText then
@@ -831,7 +835,7 @@ function VM:StyleRow(num, name, desc, opacity)
 
     row.StatusBar:SetStatusBarColor(cr, cg, cb, alpha)
 
-    local rightColumnsWidth = 46 + 4 + 42 + 3 + 24 + 3 + 20 + 3 + 31 + 4
+    local rightColumnsWidth = 46 + 4 + 42 + 3 + 24 + 3 + 20 + 3 + recordWidth + 4
     row.LeftText:SetWidth(math.max(40, row:GetWidth() - rightColumnsWidth - 4))
 end
 

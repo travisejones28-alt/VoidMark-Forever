@@ -1,6 +1,6 @@
 local VMAPI = VoidMarkForever.API
 -- VoidMark Forever compatibility layer
--- Target: WoW Forever beta 1.60.1 / Interface 16001
+-- Target: WoW Forever live 1.60.1 / Interface 16001
 -- Keeps the mature VoidMark backend/UI but replaces Era combat-log detection with
 -- visible-unit detection and standalone Forever kill/death APIs.
 
@@ -13,7 +13,7 @@ VMF.Interface = tonumber(interfaceVersion) or 0
 VMF.GUIDToName = VMF.GUIDToName or {}
 VMF.NameToGUID = VMF.NameToGUID or {}
 VMF.LastSeen = VMF.LastSeen or {}
-VMF.Build = "1.1.0"
+VMF.Build = "1.2.0"
 
 if not VMF.IsForever then
     return

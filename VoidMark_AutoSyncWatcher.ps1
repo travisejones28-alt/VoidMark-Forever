@@ -59,9 +59,9 @@ function Run-VoidMarkSync([string]$Reason) {
     }
 }
 
-# Only one watcher per Windows user.
+# Separate live Forever watcher from the user's Classic Era watcher.
 $createdNew = $false
-$mutex = New-Object System.Threading.Mutex($true, "Local\VoidMarkKillSyncWatcher", [ref]$createdNew)
+$mutex = New-Object System.Threading.Mutex($true, "Local\VoidMarkForeverKillSyncWatcher", [ref]$createdNew)
 if (-not $createdNew) {
     Log "Watcher is already running. Duplicate instance exiting."
     exit 0

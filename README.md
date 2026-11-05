@@ -1,6 +1,59 @@
 # VoidMark
 
-Current hardening release: see [HARDENING.md](HARDENING.md) for confirmed fixes, validation and in-game checks. Download the rebuilt addon from `dist/`.
+## Forever live 1.2.0
+
+Ports the current Classic Era changes through `13ad157` (November 3) into the
+canonical `VoidMarkForever` addon. Targets Interface 16001; the installed live
+client inspected for this update was 1.60.1.70790. Actual gameplay still needs
+live-client testing; automated tests cannot establish server event behavior.
+
+- Recent online sync exchanges the last 24 hours plus a two-hour overlap. Both
+  accounts must update; older peers are rejected before inventory transmission.
+  Older history is retained. Full offline reconciliation remains separate.
+- Combat sightings use inline visual rows with full Forever player names,
+  class/level/W-L, stealth/KOS markers and expiry. Secure targeting still waits
+  until combat ends. Rows stay on the LOW layer beneath ordinary windows.
+- Multi-digit W/L fits on one line; Revenge/status lines cannot wrap together.
+- Updated sentence-case streak messages use nonrepeating decks per milestone.
+- Accepted kills recover missing RunBack timers; unbounded graveyard estimates
+  display `GY ?` instead of a misleading instant-return countdown.
+- Existing Forever adapters, full identities, manual pairing and saved data
+  namespaces are preserved. Distract remains removed.
+- Offline helpers now discover `_forever_`, read `VoidMarkForever.lua`, and use
+  a separate startup shortcut and watcher mutex from Classic Era.
+
+### Switch an existing repository junction to the current addon
+
+The old root `VoidMark.toc` is a legacy beta port. A junction pointing at the
+repository root loads that old addon, not the canonical subfolder.
+
+Close WoW, pull this repository, then run in PowerShell (as administrator if the
+game folder requires it):
+
+```powershell
+& 'C:\WoW Forever Addons\VoidMark Forever\INSTALL_FOREVER_LIVE.ps1'
+```
+
+The installer copies old SavedVariables only when the new filename is absent,
+retains originals, creates the `VoidMarkForever` junction, and unlinks only the
+verified old `VoidMark` junction pointing at this repository. It refuses to
+replace unrelated folders. Repeat installs preserve existing saves. Use
+`-ClientRoot` for a different live installation, or `-WhatIf` to inspect the plan.
+Existing `VoidMarkForever.lua` files always win; a newer legacy save needs manual
+review before replacement. The installer does not start an offline watcher.
+
+For a ZIP install, use `dist/VoidMarkForever.zip` and follow the migration steps
+below. For automatic offline sync, run `INSTALL_AUTO_SYNC.bat` separately after
+the addon migration; updating source files does not restart an existing watcher.
+
+Validate with `python tests/validate.py`, `python tests/sync_regressions.py`, and
+`python tools/package.py --check`. Windows installation fixtures are in
+`tests/install_live_regressions.ps1 -WorkRoot <temporary-directory>`.
+
+In game, confirm `/vmf` reports 1.2.0, verify existing KOS/W-L, test an actual
+kill and Hunter Feign, then check combat sightings and a two-account recent sync.
+
+Historical hardening details: [HARDENING.md](HARDENING.md).
 
 
 WoW Forever implementation of VoidMark. Version 1.1.0 ports the Classic Era changes through `f6e6218`, preserving the working Forever client adapters, complete character identities and existing saved data. Classic Era remains a read-only functionality reference.

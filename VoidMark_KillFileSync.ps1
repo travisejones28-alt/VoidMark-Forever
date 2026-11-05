@@ -27,11 +27,11 @@ function Find-AccountRoot {
     }
 
     # Preferred path when this helper lives in:
-    # ...\_classic_beta_\Interface\AddOns\VoidMark\
+    # ...\_forever_\Interface\AddOns\VoidMark\
     try {
         $addonDir = $PSScriptRoot
         if ($addonDir) {
-            # VoidMark -> AddOns -> Interface -> _classic_beta_
+            # VoidMark -> AddOns -> Interface -> _forever_
             $classicEraRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $addonDir))
             $relativeAccountRoot = Join-Path $classicEraRoot "WTF\Account"
             if (Test-Path -LiteralPath $relativeAccountRoot) {
@@ -44,10 +44,10 @@ function Find-AccountRoot {
     $drives = @("C:","D:","E:","F:","G:")
 
     foreach ($d in $drives) {
-        $candidates.Add("$d\Program Files (x86)\World of Warcraft\_classic_beta_\WTF\Account")
-        $candidates.Add("$d\Program Files\World of Warcraft\_classic_beta_\WTF\Account")
-        $candidates.Add("$d\World of Warcraft\_classic_beta_\WTF\Account")
-        $candidates.Add("$d\Games\World of Warcraft\_classic_beta_\WTF\Account")
+        $candidates.Add("$d\Program Files (x86)\World of Warcraft\_forever_\WTF\Account")
+        $candidates.Add("$d\Program Files\World of Warcraft\_forever_\WTF\Account")
+        $candidates.Add("$d\World of Warcraft\_forever_\WTF\Account")
+        $candidates.Add("$d\Games\World of Warcraft\_forever_\WTF\Account")
     }
 
     try {
@@ -62,8 +62,8 @@ function Find-AccountRoot {
                     $base = $item.$prop
                     if ($base) {
                         $base = $base.TrimEnd("\")
-                        $candidates.Add((Join-Path $base "_classic_beta_\WTF\Account"))
-                        if ($base -like "*_classic_beta_*") {
+                        $candidates.Add((Join-Path $base "_forever_\WTF\Account"))
+                        if ($base -like "*_forever_*") {
                             $candidates.Add((Join-Path $base "WTF\Account"))
                         }
                     }
@@ -78,8 +78,8 @@ function Find-AccountRoot {
         }
     }
 
-    Write-Warn "Could not auto-detect the Classic Era WTF\Account folder."
-    $typed = Read-Host 'Paste the path to ...\World of Warcraft\_classic_beta_\WTF\Account'
+    Write-Warn "Could not auto-detect the WoW Forever WTF\Account folder."
+    $typed = Read-Host 'Paste the path to ...\World of Warcraft\_forever_\WTF\Account'
     if (-not $typed) { throw "No Account folder supplied." }
     $typed = [Environment]::ExpandEnvironmentVariables($typed.Trim('"'))
     if (-not (Test-Path -LiteralPath $typed)) { throw "Account root not found: $typed" }
@@ -744,7 +744,7 @@ try {
         $sv = Join-Path $acct.FullName "SavedVariables"
         if (-not (Test-Path -LiteralPath $sv)) { continue }
 
-        foreach ($file in (Get-ChildItem -LiteralPath $sv -Filter "*.lua" -File -ErrorAction SilentlyContinue)) {
+        foreach ($file in (Get-ChildItem -LiteralPath $sv -Filter "VoidMarkForever.lua" -File -ErrorAction SilentlyContinue)) {
             $text = [IO.File]::ReadAllText($file.FullName)
             if ($text -notmatch 'GankHistory' -or ($text -notmatch 'TaliaaGankGlobal' -and $text -notmatch 'TaliaaShared')) {
                 continue

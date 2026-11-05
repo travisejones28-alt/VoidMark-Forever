@@ -85,6 +85,12 @@ end
 function VoidMark:GetRunBackDisplay(name)
     local r=self:GetRunBackRecord(name)
     if not r or not RB:Finite(r.readyAt) then return nil end
+    -- An unbounded corpse position yields a zero-second geometric floor.
+    -- That means "we cannot estimate", NOT that the enemy can return now.
+    -- Never show a misleading +0:20 runback for a distant unknown graveyard.
+    if r.calc and r.calc.confidence == "UNKNOWN" and not RB:Finite(r.calc.distance) then
+        return {time="GY ?", ready=false, unknown=true, record=r}
+    end
     local now=RB:Now()
     local delta=r.readyAt-now
     if delta>0 then
@@ -145,6 +151,35 @@ function RB:OnVoidMarkRezConfirmed(r,unit)
         VoidMark:RefreshCurrentList()
         if VoidMark.UpdateActiveCount then VoidMark:UpdateActiveCount() end
     end
+end
+
+-- A confirmed local kill may reach GankTracker through a different combat-log
+-- path from RunBack's PARTY_KILL/UNIT_DIED listener. Repair only missing timers,
+-- one frame later, without replacing an existing timer or guessing coordinates.
+function VoidMark:EnsureRunBackForConfirmedKill(name, guid)
+    if not guid or type(guid) ~= "string" or guid:sub(1, 7) ~= "Player-" then return end
+    if not RB.db or RB.disabled or not RB:IsOutdoor() then return end
+    if RB.active and RB.active[guid] then return end
+    if RB.lastDeath and RB.lastDeath[guid] and RB:Now() - RB.lastDeath[guid] < 6 then return end
+
+    local info = RB.seen and RB.seen[guid] or {}
+    local p, ctx, exact = RB:CaptureLocation(guid)
+    local faction = info.faction
+    if not faction or faction == "Neutral" then
+        local mine = VMAPI.UnitFactionGroup("player")
+        faction = mine == "Horde" and "Alliance" or mine == "Alliance" and "Horde" or "Unknown"
+    end
+    -- Timers based on unbounded locations show "GY ?" rather than making up
+    -- a death-to-graveyard travel time.
+    local now = RB:Now()
+    RB.lastDeath = RB.lastDeath or {}
+    RB.lastDeath[guid] = now
+    RB:CreateTimer({
+        guid = guid, name = name, at = now, observedAt = now,
+        epoch = RB:Epoch(), position = p, context = ctx,
+        exactArea = exact, faction = faction, race = info.race,
+        class = info.class, level = info.level,
+    })
 end
 
 function RB:OnVoidMarkTimerCreated(r, restored)

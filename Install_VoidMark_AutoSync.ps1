@@ -5,7 +5,7 @@ $Watcher = Join-Path $Here "VoidMark_AutoSyncWatcher.ps1"
 $HiddenLauncher = Join-Path $Here "VoidMark_AutoSyncHidden.vbs"
 $PidFile = Join-Path $Here "VoidMark_AutoSyncWatcher.pid"
 $Startup = [Environment]::GetFolderPath("Startup")
-$ShortcutPath = Join-Path $Startup "VoidMark Automatic Kill Sync.lnk"
+$ShortcutPath = Join-Path $Startup "VoidMark Forever Automatic Kill Sync.lnk"
 
 if (-not (Test-Path -LiteralPath $Watcher)) {
     throw "Missing watcher file: $Watcher"
@@ -54,7 +54,7 @@ Write-Host "Behavior:" -ForegroundColor Cyan
 Write-Host "  - You can run 1, 2, or 3 WoW clients normally."
 Write-Host "  - Nothing is edited while ANY WoW client is open."
 Write-Host "  - When the LAST WoW client closes, it waits 5 seconds."
-Write-Host "  - It then merges kill history across every detected Classic Era account."
+Write-Host "  - It then merges kill history across every detected WoW Forever account."
 Write-Host "  - The next account you launch already has the merged history."
 Write-Host ""
 Write-Host "The long-running watcher is now completely hidden."

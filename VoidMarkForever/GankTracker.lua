@@ -2042,7 +2042,10 @@ UpdateDisplay = function()
     if GT.Frame.RevengeText then
         local revengeCount, newest = RevengeCountAndNewest()
         if revengeCount > 0 and newest then
-            GT.Frame.RevengeText:SetText("REVENGE " .. tostring(revengeCount) .. "  •  " .. tostring(newest.name or "?"))
+            local revengeName = tostring(newest.name or "?")
+            -- Keep this bottom status row single-line even with realm-qualified names.
+            if #revengeName > 18 then revengeName = revengeName:sub(1, 15) .. "..." end
+            GT.Frame.RevengeText:SetText("REVENGE " .. tostring(revengeCount) .. "  •  " .. revengeName)
             GT.Frame.RevengeText:SetTextColor(1.00, 0.32, 0.45, 1)
         else
             GT.Frame.RevengeText:SetText("REVENGE none")
@@ -2757,110 +2760,146 @@ end
 
 local STREAK_FLAVOR = {
     [5] = {
-        "KILLING SPREE", "HE'S WARMING UP", "SOMEONE CHECK ON THEM",
-        "BAD DAY TO BE ALLIANCE", "MINOR GRAVEYARD CONGESTION REPORTED",
-        "LOCAL PALADINS ADVISED TO TRAVEL IN GROUPS", "THE FIRST COMPLAINT HAS BEEN FILED",
-        "THIS SEEMED FUNNIER FIVE KILLS AGO",
+        "Five people have now made this their problem.",
+        "The first five were just to see if anyone was paying attention.",
+        "Somewhere, a paladin is typing for help.",
+        "Apparently, dying is part of their rotation.",
+        "The graveyard is getting repeat customers.",
+        "I love when the content delivers itself.",
+        "Not sure what their plan was, but that wasn't it.",
+        "Five kills and I've already been called toxic twice.",
+        "This is turning into a very affordable evening.",
+        "I don't think they read the PvP server description.",
+        "Their strategy appears to involve dying near me.",
+        "Somebody just added me to a very angry list.",
+        "The spirit healer is putting in overtime.",
+        "I was minding my business. Poorly.",
+        "They're going to blame the class matchup.",
+        "At least someone's enjoying their subscription.",
+        "The first complaint is probably being drafted.",
+        "Five kills. Zero meaningful resistance.",
+        "I see the Alliance is trying a new respawn-based strategy.",
+        "That graveyard run is starting to look like cardio.",
+        "I hope their hearthstone is on cooldown.",
+        "I'm starting to recognize the same bad decisions.",
+        "Somebody's quest log is getting absolutely no attention.",
+        "They seem determined to make this a recurring expense.",
+        "The $14.99 continues to justify itself.",
     },
     [10] = {
-        "BODIES ARE PILING UP", "THIS IS GETTING PERSONAL", "THE GRAVEYARD IS GETTING BUSY",
-        "LOCAL RESPONSE TIME INCREASING", "CORPSE RUN TRAFFIC NOW MODERATE",
-        "ZONE CHAT HAS BEGUN ASKING QUESTIONS", "THEY HAVE FORMED A COMMITTEE",
-        "TEN DIFFERENT PEOPLE HAVE MADE THE SAME MISTAKE",
+        "Their backup has officially become bonus content.",
+        "Ten kills and they're still treating this like a learning experience.",
+        "I haven't seen this many bad decisions since character creation.",
+        "Someone's definitely blaming their addons.",
+        "They're recruiting people who haven't heard the story yet.",
+        "I think their guild chat is discussing me.",
+        "The graveyard run is now part of their daily routine.",
+        "Ten kills. I'm practically providing a transportation service.",
+        "They came back with friends. I appreciate the referral.",
+        "A coordinated group would probably help. This isn't one.",
+        "Someone's about to explain how they almost had me.",
+        "I wonder how many times they're willing to test that theory.",
+        "The Alliance is trying to solve a skill issue with headcount.",
+        "I came for PvP. They brought a customer loyalty program.",
+        "Their revenge tour keeps stopping at the same graveyard.",
+        "Ten kills and someone still thinks the next attempt is different.",
+        "Their raid leader is about to become a former raid leader.",
+        "I hope they're getting rested XP from all this downtime.",
+        "This is the kind of gameplay that makes people reroll.",
+        "Someone just whispered a level 60 to come save them.",
+        "The rescue team has requested a rescue team.",
+        "They've tried everything except a different route.",
+        "I'm not camping. They're scheduling appointments.",
+        "They must have a quest to die here ten times.",
+        "Their entire evening is turning into a Taliaa side quest.",
+        "I've seen better coordination from escort quest NPCs.",
+        "The reinforcements arrived just in time to contribute.",
+        "At least the runback gives them time to reflect.",
+        "Imagine paying $14.99 to repeatedly visit the same spirit healer.",
+        "Somebody's going to call this a 10v1 despite there being ten corpses.",
     },
     [15] = {
-        "ABSOLUTE MENACE", "THIS HAS BECOME A PUBLIC SAFETY ISSUE", "SOMEONE CALL MANAGEMENT",
-        "THE ZONE HAS FILED A COMPLAINT", "GRAVEYARD PARKING IS NOW FULL",
-        "AN INCIDENT COMMAND POST HAS BEEN ESTABLISHED", "THE SITUATION HAS DEVELOPED ITS OWN PAPERWORK",
-        "LOCAL AUTHORITIES RECOMMEND LOGGING AN ALT",
+        "Fifteen kills and I'm somehow ruining their evening.",
+        "Their guild has been notified. Their guild is also dead.",
+        "I think somebody just said, 'Everyone focus the priest.'",
+        "They're treating my location like a world boss spawn.",
+        "Imagine assembling a group and making the problem worse.",
+        "At this point, I should be charging an entrance fee.",
+        "The graveyard is now their unofficial guild headquarters.",
+        "Someone has definitely threatened to report me.",
+        "Their strategy meeting should've been an email.",
+        "The Alliance appears to be conducting live durability testing.",
+        "I hope nobody told the new guy this would be easy.",
+        "They're not even questing anymore. It's just revenge and disappointment.",
+        "Their guild recruitment message should probably mention this.",
+        "Fifteen kills. I wonder if they're still having fun.",
+        "Every new arrival gets the same orientation.",
+        "They're organizing a manhunt against someone who's barely moving.",
+        "The group leader keeps inviting fresh optimism.",
+        "They've started blaming the healer. Classic.",
+        "At this point, even the NPCs are embarrassed.",
+        "Somebody is writing a paragraph I am absolutely not reading.",
+        "I'm not saying it's personal, but they've stopped looting.",
+        "Their revenge squad has developed a turnover problem.",
+        "Imagine logging in to help a friend and immediately regretting it.",
+        "I've become the only quest objective they care about.",
+        "At least somebody's subscription is getting used.",
     },
     [20] = {
-        "LOCAL DISASTER", "EVACUATION MAY BE APPROPRIATE", "THIS IS NOW A REGIONAL PROBLEM",
-        "RESPAWN SERVICES OVERWHELMED", "THE GRAVEYARD HAS SWITCHED TO TRIAGE",
-        "THIS NOW REQUIRES A POWERPOINT", "A SECOND GRAVEYARD HAS BEEN REQUESTED",
-        "THE CORONER HAS STOPPED ASKING FOR NAMES",
+        "Twenty kills. The Alliance has officially become a renewable resource.",
+        "They brought the whole guild. That was considerate.",
+        "I'm beginning to think their raid frames are just a casualty list.",
+        "The rescue operation has become the emergency.",
+        "Someone is going to need a new excuse.",
+        "Twenty kills and they still believe the next pull is the one.",
+        "Their strategy has evolved from dying alone to dying together.",
+        "I should probably send their guild leader a thank-you note.",
+        "The Alliance has escalated this to upper management.",
+        "I didn't realize I was tonight's scheduled raid boss.",
+        "Twenty kills. Still cheaper than going to the movies.",
+        "They're calling this a war. I'm calling it Tuesday.",
+        "The graveyard should consider assigned seating.",
+        "Their corpse runs now qualify as endurance training.",
+        "At this point, the spirit healer knows everyone by name.",
     },
     [25] = {
-        "PUBLIC ENEMY", "WANTED IN MULTIPLE ZONES", "THE CORPSE RUN ECONOMY IS BOOMING",
-        "GRAVEYARD STAFF REQUESTING OVERTIME", "THE FLIGHT MASTER IS CONSIDERING EVACUATION",
-        "LOCAL INNS ARE OFFERING WITNESS PROTECTION", "THE ALLIANCE HAS OPENED A HELP DESK",
-        "THIS INCIDENT NOW HAS A CASE NUMBER",
+        "This entire zone has become a customer service complaint.",
+        "I think the Alliance is trying to unlock a secret defeat achievement.",
+        "The reinforcements have started asking for reinforcements.",
+        "Someone needs to tell the guild leader what actually happened.",
+        "My $14.99 is doing some incredible work tonight.",
+        "They're going to need a spreadsheet to explain these losses.",
+        "The graveyard has become the most successful Alliance gathering point.",
+        "Their strategy is now entirely based on hoping I disconnect.",
+        "I believe I've accidentally started an Alliance guild meeting.",
+        "They've stopped trying to win and started trying to prove a point.",
     },
-    [30] = {
-        "SEND REINFORCEMENTS", "THE NATIONAL GUARD HAS BEEN NOTIFIED", "THIS WAS NOT IN THE RAID PLAN",
-        "RESPAWN BUDGET EXCEEDED", "THE GRAVEYARD HAS DECLARED A STATE OF EMERGENCY",
-        "THE WAR ROOM IS JUST PEOPLE POINTING AT THE MAP", "THEY HAVE BEGUN BLAMING LAG",
-        "AN EMERGENCY MEETING HAS ACCOMPLISHED NOTHING",
-    },
-    [35] = {
-        "THIS IS GETTING RIDICULOUS", "WE ARE RUNNING OUT OF GRAVESTONES", "ZONE CHAT IS IN SHAMBLES",
-        "THIS FEELS ADMINISTRATIVE NOW", "THE INCIDENT REPORT HAS BECOME A NOVEL",
-        "GRAVEYARD STAFF HAVE UNIONIZED", "THE MAP LEGEND NOW INCLUDES TALIAA",
-        "SOMEONE HAS DEFINITELY OPENED A TICKET",
-    },
-    [40] = {
-        "OUT OF CONTROL", "STILL NOT DEAD", "THIS HAS ESCALATED BEYOND REASON",
-        "GRAVEYARD QUEUE EXCEEDS CAPACITY", "WHO APPROVED THIS", "THE MAP IS NOW A CRIME SCENE",
-        "PLEASE STOP FEEDING HIM", "SITUATION NORMAL: EVERYONE IS DEAD",
-        "THE GRAVEYARD IS ACCEPTING RESERVATIONS", "THE ALLIANCE HAS REQUESTED A SERVER RESTART",
-        "THE WAR EFFORT HAS BEEN RECLASSIFIED AS A LOST AND FOUND",
-        "THE INCIDENT COMMANDER HAS LEFT THE GROUP",
-    },
-}
-local STREAK_FALLBACK = {
-    "STILL NOT DEAD",
-    "THIS HAS ESCALATED BEYOND REASON",
-    "GRAVEYARD QUEUE EXCEEDS CAPACITY",
-    "WHO APPROVED THIS",
-    "THE MAP IS NOW A CRIME SCENE",
-    "PLEASE STOP FEEDING HIM",
-    "SITUATION NORMAL: EVERYONE IS DEAD",
-    "THE GRAVEYARD IS ACCEPTING RESERVATIONS",
-    "THE ALLIANCE HAS REQUESTED A SERVER RESTART",
-    "THE WAR ROOM HAS STOPPED RETURNING CALLS",
-    "LOCAL AUTHORITIES HAVE CHANGED THEIR NAMES",
-    "THE CORPSE RUN NOW HAS A COMMUTER LANE",
-    "THE GRAVEYARD HAS A WAITING ROOM",
-    "THIS IS NO LONGER PVP. THIS IS URBAN PLANNING",
-    "THE RESPAWN TIMER HAS RETAINED LEGAL COUNSEL",
-    "THE MAP IS REQUESTING PAID TIME OFF",
-    "A TASK FORCE HAS BEEN FORMED TO STUDY THE TASK FORCE",
-    "THE ALLIANCE HAS BEGUN EVACUATING LOW LEVELS",
-    "GRAVEYARD CAPACITY IS NOW A STRATEGIC RESOURCE",
-    "THE INCIDENT REPORT JUST RAN OUT OF PAPER",
-    "THIS KILL STREAK NOW HAS ITS OWN ZIP CODE",
-    "THE LOCAL ECONOMY IS 80 PERCENT REPAIR BILLS",
-    "THE SPIRIT HEALER HAS ACTIVATED SURGE PRICING",
-    "THE ZONE HAS ENTERED THE FIND OUT PHASE",
-    "THEY ARE NOW RESPAWNING OUT OF HABIT",
-    "THE GRAVEYARD SHIFT CHANGE HAS BEEN CANCELLED",
-    "THE NEXT REINFORCEMENT IS JUST ANOTHER CORPSE",
-    "SOMEONE CHECK IF THIS IS STILL WITHIN THE TERMS OF SERVICE",
-    "THE ALLIANCE IS CURRENTLY ACCEPTING APPLICATIONS FOR SURVIVORS",
-    "AT THIS POINT THE GRAVEYARD IS THE MAIN CITY",
 }
 
-local function PickStreakFlavor(pool)
-    if type(pool) ~= "table" or #pool == 0 then return nil end
-    return pool[math.random(1, #pool)]
+-- Each milestone uses its own shuffled deck: no repeats until that tier is exhausted.
+-- This is transient UI flavor only; it never touches kill statistics or SavedVariables.
+local streakDecks = {}
+local function PickStreakFlavor(tier)
+    local pool = STREAK_FLAVOR[tier]
+    if not pool or #pool == 0 then return nil end
+    local deck = streakDecks[tier]
+    if not deck or #deck == 0 then
+        deck = {}
+        for i = 1, #pool do deck[i] = i end
+        for i = #deck, 2, -1 do
+            local j = math.random(i)
+            deck[i], deck[j] = deck[j], deck[i]
+        end
+        streakDecks[tier] = deck
+    end
+    return pool[table.remove(deck)]
 end
 
 local function StreakFlavor(streak)
     streak = tonumber(streak) or 0
     if streak < 5 or streak % 5 ~= 0 then return nil end
-
-    -- Five kills unlocks the nonsense pool. From then on every 5-kill
-    -- milestone can draw from every line instead of being tier-locked.
-    local pool = {}
-    for _, milestonePool in pairs(STREAK_FLAVOR) do
-        for _, line in ipairs(milestonePool) do
-            pool[#pool + 1] = line
-        end
-    end
-    for _, line in ipairs(STREAK_FALLBACK) do
-        pool[#pool + 1] = line
-    end
-    return PickStreakFlavor(pool)
+    local tier = math.min(streak, 25)
+    return PickStreakFlavor(tier)
 end
 
 local function BuildStreakEndMessage(streak)
@@ -2905,7 +2944,7 @@ local function BuildStreakMilestoneMessage()
     local streak = tonumber(GT.currentStreak) or 0
     local flavor = StreakFlavor(streak)
     if not flavor then return nil end
-    return string.format("KILL STREAK %d - %s", streak, flavor)
+    return string.format("Kill streak %d - %s", streak, flavor)
 end
 
 
@@ -3065,6 +3104,20 @@ function GT:RecordKill(playerName, playerGUID, shouldAnnounce)
         historicalKills = tonumber(historicalKills) or 0
     end
     perfLastMS = PerfMark(perf, "repository write", perfLastMS)
+
+    -- RunBack's separate death listener can miss a kill that GankTracker
+    -- confirmed through an alternate credit path. Defer the backup so the
+    -- regular death listener gets first chance to create its timer. This does
+    -- not modify the kill ledger or interfere with successful timers.
+    if IsPlayerGUID(playerGUID) and C_Timer and C_Timer.After then
+        local runbackName, runbackGUID = playerName, playerGUID
+        C_Timer.After(0.20, function()
+            if VoidMark and VoidMark.EnsureRunBackForConfirmedKill
+                and not GT:IsRecentFeign(runbackName, runbackGUID) then
+                VoidMark:EnsureRunBackForConfirmedKill(runbackName, runbackGUID)
+            end
+        end)
+    end
 
     -- Keep VoidMark's visible W/L cache in lockstep with the canonical lifetime
     -- repository value returned for this kill. This fixes rows that could remain
@@ -3519,18 +3572,30 @@ frame.RevengeText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall
 frame.RevengeText:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 10, 73)
 frame.RevengeText:SetPoint("RIGHT", frame, "RIGHT", -10, 0)
 frame.RevengeText:SetJustifyH("LEFT")
+-- Status rows must not wrap into their neighbors at different UI scales.
+frame.RevengeText:SetHeight(12)
+if frame.RevengeText.SetWordWrap then frame.RevengeText:SetWordWrap(false) end
+if frame.RevengeText.SetMaxLines then frame.RevengeText:SetMaxLines(1) end
 frame.RevengeText:SetTextColor(0.50, 0.44, 0.56, 1)
 
 frame.RepoText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 frame.RepoText:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 10, 59)
 frame.RepoText:SetPoint("RIGHT", frame, "RIGHT", -10, 0)
 frame.RepoText:SetJustifyH("LEFT")
+-- Status rows must not wrap into their neighbors at different UI scales.
+frame.RepoText:SetHeight(12)
+if frame.RepoText.SetWordWrap then frame.RepoText:SetWordWrap(false) end
+if frame.RepoText.SetMaxLines then frame.RepoText:SetMaxLines(1) end
 frame.RepoText:SetTextColor(0.54, 0.45, 0.62, 1)
 
 frame.CombatText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 frame.CombatText:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 10, 45)
 frame.CombatText:SetPoint("RIGHT", frame, "RIGHT", -10, 0)
 frame.CombatText:SetJustifyH("LEFT")
+-- Status rows must not wrap into their neighbors at different UI scales.
+frame.CombatText:SetHeight(12)
+if frame.CombatText.SetWordWrap then frame.CombatText:SetWordWrap(false) end
+if frame.CombatText.SetMaxLines then frame.CombatText:SetMaxLines(1) end
 frame.CombatText:SetTextColor(0.54, 0.45, 0.62, 1)
 
 frame.SyncText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")

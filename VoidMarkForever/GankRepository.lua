@@ -30,6 +30,10 @@ local syncSendNotBefore = 0
 local ID_LIST_SEP = "\030"
 local INVENTORY_CHUNK_BYTES = 150
 local SYNC_BUILD_BATCH = 120
+-- 24-hour activity window plus a 2-hour overlap for delayed client sessions.
+local RECENT_SYNC_SECONDS = (24 + 2) * 3600
+local recentSyncHandshake = nil
+local activeRecentCutoffs = {}
 local incomingInventories = {}
 
 local pairing = false
@@ -1943,7 +1947,7 @@ end
 -- Build the sync inventory incrementally. The old implementation collected and
 -- sorted every known ID in one Lua execution, which could freeze the client for
 -- long enough to trip WoW's script execution limit on large repositories.
-local function QueueInventoryAsync(gameAccountID, tx, requestReply, onComplete)
+local function QueueInventoryAsync(gameAccountID, tx, requestReply, onComplete, cutoff)
     local history = EnsureHistory()
     local dhkHistory = EnsureDHKHistory()
 
@@ -1955,6 +1959,7 @@ local function QueueInventoryAsync(gameAccountID, tx, requestReply, onComplete)
         key = nil,
         seenKills = {},
         seenDHKs = {},
+        cutoff = tonumber(cutoff),
         killCount = 0,
         dhkCount = 0,
         chunk = {},
@@ -1996,7 +2001,6 @@ local function QueueInventoryAsync(gameAccountID, tx, requestReply, onComplete)
         job.chunk[#job.chunk + 1] = id
         job.chunkBytes = job.chunkBytes + addBytes
     end
-
     local function SwitchPhase(nextPhase, currentKind)
         Flush(currentKind)
         job.phase = nextPhase
@@ -2014,12 +2018,12 @@ local function QueueInventoryAsync(gameAccountID, tx, requestReply, onComplete)
                     SwitchPhase("killSeen", "K")
                 else
                     job.key = k
-                    AddID("K", k)
+                    if not job.cutoff or (tonumber(tbl[k] and tbl[k].t) or 0) >= job.cutoff then AddID("K", k) end
                     processed = processed + 1
                 end
 
             elseif job.phase == "killSeen" then
-                local tbl = history and history.seenIDs or nil
+                local tbl = (not job.cutoff) and history and history.seenIDs or nil
                 local k, v = tbl and next(tbl, job.key) or nil, nil
                 if k ~= nil and tbl then v = tbl[k] end
                 if k == nil then
@@ -2037,12 +2041,12 @@ local function QueueInventoryAsync(gameAccountID, tx, requestReply, onComplete)
                     SwitchPhase("dhkSeen", "H")
                 else
                     job.key = k
-                    AddID("H", k)
+                    if not job.cutoff or (tonumber(tbl[k] and tbl[k].t) or 0) >= job.cutoff then AddID("H", k) end
                     processed = processed + 1
                 end
 
             elseif job.phase == "dhkSeen" then
-                local tbl = dhkHistory and dhkHistory.seenIDs or nil
+                local tbl = (not job.cutoff) and dhkHistory and dhkHistory.seenIDs or nil
                 local k, v = tbl and next(tbl, job.key) or nil, nil
                 if k ~= nil and tbl then v = tbl[k] end
                 if k == nil then
@@ -2054,6 +2058,7 @@ local function QueueInventoryAsync(gameAccountID, tx, requestReply, onComplete)
                         job.requestReply and "1" or "0",
                         tostring(job.killCount),
                         tostring(job.dhkCount),
+                        tostring(job.cutoff or 0),
                     }, SEP))
 
                     if onComplete then
@@ -2113,7 +2118,7 @@ end
 -- events synchronously when the peer inventory arrived, causing 20-30 second
 -- stalls and execution-time-limit errors. Ordering is irrelevant for correctness;
 -- event IDs are authoritative and the send queue already preserves packet order.
-local function QueueMissingEventsAsync(gameAccountID, remoteKills, remoteDHKs, tx, finalLeg, onComplete)
+local function QueueMissingEventsAsync(gameAccountID, remoteKills, remoteDHKs, tx, finalLeg, onComplete, cutoff)
     remoteKills = remoteKills or {}
     remoteDHKs = remoteDHKs or {}
     tx = tostring(tx or "")
@@ -2125,7 +2130,7 @@ local function QueueMissingEventsAsync(gameAccountID, remoteKills, remoteDHKs, t
     local sentKills, sentDHKs = 0, 0
 
     local function Finish()
-        local sentFloors = QueueAllLegacyFloors(gameAccountID)
+        local sentFloors = cutoff and 0 or QueueAllLegacyFloors(gameAccountID)
 
         QueuePayload(gameAccountID, table.concat({
             "D",
@@ -2135,6 +2140,7 @@ local function QueueMissingEventsAsync(gameAccountID, remoteKills, remoteDHKs, t
             tostring(sentKills),
             tostring(sentDHKs),
             tostring(sentFloors),
+            tostring(cutoff or 0),
         }, SEP))
 
         if onComplete then
@@ -2159,7 +2165,7 @@ local function QueueMissingEventsAsync(gameAccountID, remoteKills, remoteDHKs, t
                 else
                     key = k
                     local id = tostring(k or (event and event.id) or "")
-                    if event and id ~= "" and not remoteKills[id] then
+                    if event and id ~= "" and (not cutoff or (tonumber(event.t) or 0) >= cutoff) and not remoteKills[id] then
                         QueuePayload(gameAccountID, EncodeEvent(event))
                         sentKills = sentKills + 1
                     end
@@ -2179,7 +2185,7 @@ local function QueueMissingEventsAsync(gameAccountID, remoteKills, remoteDHKs, t
                 else
                     key = k
                     local id = tostring(k or (event and event.id) or "")
-                    if event and id ~= "" and not remoteDHKs[id] then
+                    if event and id ~= "" and (not cutoff or (tonumber(event.t) or 0) >= cutoff) and not remoteDHKs[id] then
                         QueuePayload(gameAccountID, EncodeDHKEvent(event))
                         sentDHKs = sentDHKs + 1
                     end
@@ -2630,6 +2636,8 @@ function Repo:GetSyncStatus()
             sync.activeSyncTx = nil
             sync.verifyRetries = 0
             wipe(incomingInventories)
+            recentSyncHandshake = nil
+            wipe(activeRecentCutoffs)
         end
     end
 
@@ -2853,20 +2861,29 @@ function Repo:SyncNow(silent, force)
 
     sync.lastSyncAttempt = now
 
-    if not silent then
-        Print("Fast sync started: building repository inventory in small batches.")
-    end
+    -- Fail closed when the peer is on an older addon. Sending a recent-only
+    -- inventory to an old client would make it resend the entire history.
+    local cutoff = now - RECENT_SYNC_SECONDS
+    recentSyncHandshake = { tx = tx, cutoff = cutoff, peerID = peerID, silent = silent }
+    QueuePayload(peerID, table.concat({
+        "V", CleanField(EnsureLocalSessionToken()), tx, "R26", "REQ", tostring(cutoff)
+    }, SEP))
+    if not silent then Print("Recent sync requested: last 26 hours. Checking peer version.") end
 
-    QueueInventoryAsync(peerID, tx, true, function(killIDs, dhkIDs)
-        local s = EnsureSyncDB()
-        if s then s.lastSendProgress = Now() end
-        if not silent then
-            Print("Inventory queued: comparing "
-                .. tostring(killIDs) .. " kill IDs + "
-                .. tostring(dhkIDs) .. " DHK IDs with peer.")
+    local function CheckHandshake()
+        local pending = recentSyncHandshake
+        if not pending or pending.tx ~= tx then return end
+        if InCombatNow() then C_Timer.After(10, CheckHandshake); return end
+        recentSyncHandshake = nil
+        local current = EnsureSyncDB()
+        if current and current.activeSyncTx == tx then
+            current.syncing = false
+            current.bulkReceivePending = nil
+            current.activeSyncTx = nil
         end
-    end)
-
+        Print("Recent sync cancelled: peer lacks 26-hour protocol. Update VoidMark on BOTH accounts.")
+    end
+    C_Timer.After(12, CheckHandshake)
     return true
 end
 
@@ -3285,6 +3302,34 @@ local function HandlePayload(payload, senderID)
     sync.lastPeerSeen = Now()
     sync.lastReceive = sync.lastPeerSeen
 
+    if kind == "V" then
+        local tx = tostring(parts[3] or "")
+        local mode = tostring(parts[4] or "")
+        local action = tostring(parts[5] or "")
+        local cutoff = tonumber(parts[6])
+        if mode ~= "R26" or not cutoff or cutoff > Now()
+            or cutoff < (Now() - RECENT_SYNC_SECONDS - 600) then return end
+        if action == "REQ" then
+            QueuePayload(sync.peerGameAccountID, table.concat({
+                "V", CleanField(EnsureLocalSessionToken()), tx, "R26", "ACK", tostring(cutoff)
+            }, SEP))
+        elseif action == "ACK" then
+            local pending = recentSyncHandshake
+            if pending and pending.tx == tx and pending.cutoff == cutoff then
+                recentSyncHandshake = nil
+                activeRecentCutoffs[tx] = cutoff
+                QueueInventoryAsync(pending.peerID, tx, true, function(kills, dhks)
+                    local current = EnsureSyncDB()
+                    if current then current.lastSendProgress = Now() end
+                    if not pending.silent then
+                        Print("Recent inventory: " .. kills .. " kills + " .. dhks .. " DHKs queued.")
+                    end
+                end, cutoff)
+            end
+        end
+        return
+    end
+
     if kind == "I" then
         RememberInventoryChunk(parts)
         return
@@ -3293,6 +3338,13 @@ local function HandlePayload(payload, senderID)
     if kind == "J" then
         local tx = tostring(parts[3] or "")
         local requestReply = tostring(parts[4] or "0") == "1"
+        local cutoff = tonumber(parts[7])
+        if not cutoff or cutoff <= 0 or cutoff > Now()
+            or cutoff < (Now() - RECENT_SYNC_SECONDS - 600) then
+            Print("Refusing unscoped inventory. Update both clients.")
+            return
+        end
+        activeRecentCutoffs[tx] = cutoff
         local slot = incomingInventories[tx] or { kills = {}, dhks = {} }
         incomingInventories[tx] = nil
 
@@ -3323,9 +3375,10 @@ local function HandlePayload(payload, senderID)
                     QueueInventoryAsync(s.peerGameAccountID, tx .. "-r", false, function()
                         local s2 = EnsureSyncDB()
                         if s2 then s2.lastSendProgress = Now() end
-                    end)
+                    end, cutoff)
                 end
-            end
+            end,
+            cutoff
         )
         return
     end
@@ -3374,18 +3427,37 @@ local function HandlePayload(payload, senderID)
     if kind == "D" then
         sync.lastSyncComplete = Now()
         local wasBulk = sync.bulkReceivePending
-        sync.bulkReceivePending = nil
 
         local tx = tostring(parts[3] or "")
         local finalLeg = tostring(parts[4] or "0") == "1"
+        local recentCutoff = tonumber(parts[8])
+        local isRecent = recentCutoff and recentCutoff > 0
 
-        if wasBulk and TaliaaGankTracker then
+        -- First D finishes only the outbound leg, NOT the entire recent sync.
+        -- Keep bulk mode active while receiving the return leg: otherwise each
+        -- received kill invokes OnHistoryUpdated and can rebuild 14k records.
+        if not isRecent or finalLeg then
+            sync.bulkReceivePending = nil
+        end
+
+        if wasBulk and (not isRecent or finalLeg) and TaliaaGankTracker then
             if TaliaaGankTracker.OnHistoryUpdated then
                 TaliaaGankTracker:OnHistoryUpdated(nil, nil, 0)
             end
             if TaliaaGankTracker.OnDHKHistoryUpdated then
                 TaliaaGankTracker:OnDHKHistoryUpdated()
             end
+        end
+
+        if finalLeg and recentCutoff and recentCutoff > 0 then
+            QueuePayload(sync.peerGameAccountID, table.concat({
+                "C", CleanField(EnsureLocalSessionToken()), tx, "R26", tostring(recentCutoff)
+            }, SEP))
+            sync.syncing = false
+            sync.activeSyncTx = nil
+            activeRecentCutoffs[tx] = nil
+            Print("RECENT SYNC COMPLETE: last 26 hours exchanged. Older history retained.")
+            return
         end
 
         if finalLeg then
@@ -3414,6 +3486,30 @@ local function HandlePayload(payload, senderID)
                 .. tostring(tonumber(total) or 0) .. " kills / "
                 .. tostring(tonumber(victims) or 0) .. " marks / "
                 .. tostring(tonumber(floorCount) or 0) .. " historical floors.")
+        end
+        return
+    end
+
+    if kind == "C" and parts[4] == "R26" then
+        local tx = tostring(parts[3] or "")
+        local cutoff = tonumber(parts[5])
+        if cutoff and activeRecentCutoffs[tx] == cutoff then
+            activeRecentCutoffs[tx] = nil
+            sync.syncing = false
+            sync.bulkReceivePending = nil
+            sync.activeSyncTx = nil
+            sync.lastSyncComplete = Now()
+            sync.lastSyncVerified = Now()
+            -- One consolidated UI/stat refresh after all return-leg records land.
+            if TaliaaGankTracker then
+                if TaliaaGankTracker.OnHistoryUpdated then
+                    TaliaaGankTracker:OnHistoryUpdated(nil, nil, 0)
+                end
+                if TaliaaGankTracker.OnDHKHistoryUpdated then
+                    TaliaaGankTracker:OnDHKHistoryUpdated()
+                end
+            end
+            Print("RECENT SYNC COMPLETE: last 26 hours exchanged. Offline sync keeps full history.")
         end
         return
     end
