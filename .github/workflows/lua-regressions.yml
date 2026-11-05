@@ -24,7 +24,7 @@ jobs:
       - name: Validate two-client recent sync
         run: python tests/sync_regressions.py
       - name: Verify installable ZIP matches canonical sources
-        run: python tools/package.py --check
+        run: python tools/package.py && python tools/package.py --check
 
   windows-install:
     runs-on: windows-latest
