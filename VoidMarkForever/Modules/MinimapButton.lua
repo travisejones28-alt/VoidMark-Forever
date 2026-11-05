@@ -44,7 +44,7 @@ local function DB()
     VoidMarkDB.VoidMarkMinimap = type(VoidMarkDB.VoidMarkMinimap) == "table" and VoidMarkDB.VoidMarkMinimap or {}
     local db = VoidMarkDB.VoidMarkMinimap
     if db.show == nil then db.show = true end
-    if type(db.angle) ~= "number" then db.angle = 225 end
+    if type(db.angle) ~= "number" then db.angle = 45 end
     return db
 end
 
@@ -103,18 +103,19 @@ end
 
 function MM:Create()
     if self.button or not Minimap then return end
+    -- If the client initializes UI elements late, PLAYER_LOGIN retries creation.
 
     local b = CreateFrame("Button", "VoidMarkMinimapButton", Minimap, "BackdropTemplate")
     self.button = b
     b:SetSize(32, 32)
-    b:SetFrameStrata("MEDIUM")
+    b:SetFrameStrata("HIGH")
     b:SetFrameLevel((Minimap:GetFrameLevel() or 0) + 8)
     b:SetClampedToScreen(true)
     b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     b:RegisterForDrag("LeftButton")
 
     -- True circular minimap button: no square backdrop or tooltip border.
-    b:SetBackdrop(nil)
+    if b.SetBackdrop then b:SetBackdrop(nil) end
 
     b.ring = b:CreateTexture(nil, "BACKGROUND")
     b.ring:SetPoint("CENTER")
@@ -186,12 +187,45 @@ if VoidMark and VoidMark.options and VoidMark.options.args and VoidMark.options.
     }
 end
 
--- SavedVariables are restored before ADDON_LOADED fires for this addon.
--- Waiting here avoids creating or modifying VoidMarkDB during file execution.
-local loader = CreateFrame("Frame")
-VoidMarkForever.RegisterEvent(loader,"ADDON_LOADED")
-loader:SetScript("OnEvent", function(self, _, loaded)
-    if loaded ~= addonName then return end
-    self:UnregisterEvent("ADDON_LOADED")
+-- Keep both load and login paths: some Forever UI setups do not have the
+-- minimap available until PLAYER_LOGIN, while reloads may already be logged in.
+-- Explicit command also recovers buttons hidden by old SavedVariables.
+SLASH_VOIDMARKMINIMAP1 = "/vmminimap"
+SlashCmdList["VOIDMARKMINIMAP"] = function(msg)
+    msg = type(msg) == "string" and msg:lower():match("^%s*(.-)%s*$") or ""
     MM:Create()
+    if msg == "hide" or msg == "off" then
+        MM:SetShown(false)
+    else
+        MM:SetShown(true)
+        MM:UpdatePosition()
+    end
+    if DEFAULT_CHAT_FRAME then
+        DEFAULT_CHAT_FRAME:AddMessage("VoidMark minimap button: " .. (DB().show and "shown" or "hidden"))
+    end
+end
+
+if VoidMark and VoidMark.options and VoidMark.options.args then
+    VoidMark.options.args.minimap = {
+        name = "Show Minimap Button",
+        desc = "Restore the VoidMark launcher beside the minimap.",
+        type = "execute",
+        order = 11,
+        func = function() MM:Create(); MM:SetShown(true); MM:UpdatePosition() end,
+        dialogHidden = true,
+    }
+end
+
+local loader = CreateFrame("Frame")
+loader:RegisterEvent("ADDON_LOADED")
+loader:RegisterEvent("PLAYER_LOGIN")
+loader:SetScript("OnEvent", function(self, event, loaded)
+    if event == "ADDON_LOADED" and loaded ~= addonName then return end
+    MM:Create()
+    if event == "PLAYER_LOGIN" then
+        self:UnregisterEvent("ADDON_LOADED")
+        self:UnregisterEvent("PLAYER_LOGIN")
+    end
 end)
+
+if IsLoggedIn and IsLoggedIn() then MM:Create() end
