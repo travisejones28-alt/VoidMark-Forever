@@ -350,11 +350,11 @@ function TRD:CheckMountState(force)
     if mounted then
         C_Timer.After(0.25, function()
             if TRD.db and TRD.db.enabled and IsRealMount() then
-                TRD:ApplyMode("riding")
+                TRD:ApplyMode("riding", true)
             end
         end)
     else
-        self:ApplyMode("ground")
+        self:ApplyMode("ground", true)
     end
 
     self:RefreshUI()
@@ -923,7 +923,7 @@ TRD:SetScript("OnEvent", function(self, event, ...)
             end
             self.db.pendingMode = desired
             if desired then
-                self:ApplyMode(desired)
+                self:ApplyMode(desired, true)
                 self:QueueGearRecheck(0.5)
             end
         end
