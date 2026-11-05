@@ -1,3 +1,4 @@
+local VMAPI = VoidMarkForever.API
 local SM = LibStub:GetLibrary("LibSharedMedia-3.0")
 local AceLocale = LibStub("AceLocale-3.0")
 local L = AceLocale:GetLocale("VoidMark")
@@ -5,11 +6,11 @@ local fonts = SM:List("font")
 local _
 
 VoidMark = LibStub("AceAddon-3.0"):NewAddon("VoidMark", "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0")
-VoidMark.Version = "0.1.5-beta-forever"
+VoidMark.Version = "1.2.0"
 VoidMark.DatabaseVersion = "1.1"
 VoidMark.Signature = "[VoidMark]"
 VoidMark.ButtonLimit = 15
-VoidMark.MaximumPlayerLevel = (MAX_PLAYER_LEVEL_TABLE and MAX_PLAYER_LEVEL_TABLE[GetExpansionLevel()]) or 60
+VoidMark.MaximumPlayerLevel = (MAX_PLAYER_LEVEL_TABLE and GetExpansionLevel and MAX_PLAYER_LEVEL_TABLE[GetExpansionLevel()]) or 60
 
 VoidMark.ZoneID = {}
 VoidMark.KOSGuild = {}
@@ -137,20 +138,6 @@ VoidMark.options = {
 						VoidMark:ZoneChangedEvent()
 					end,
 				}, ]]--
-				DisableWhenPVPUnflagged = {
-					name = L["DisableWhenPVPUnflagged"],
-					desc = L["DisableWhenPVPUnflaggedDescription"],
-					type = "toggle",
-					order = 6,
-					width = "full",
-					get = function(info)
-						return VoidMark.db.profile.DisableWhenPVPUnflagged
-					end,
-					set = function(info, value)
-						VoidMark.db.profile.DisableWhenPVPUnflagged = value
-						VoidMark:ZoneChangedEvent()
-					end,
-				},
 				DisabledInZones = {
 					name = L["DisabledInZones"],
 					desc = L["DisabledInZonesDescription"],
@@ -282,6 +269,20 @@ VoidMark.options = {
 					end,
 					set = function(info, value)
 						VoidMark.db.profile.PrioritiseKoS = value
+					end,
+				},
+				HideWhenPVPUnflagged = {
+					name = "Hide VoidMark when not PvP flagged",
+					desc = "When enabled, the VoidMark window hides while your character is not PvP flagged. Off by default so VoidMark stays visible.",
+					type = "toggle",
+					order = 3.5,
+					width = "full",
+					get = function()
+						return VoidMark.db.profile.DisableWhenPVPUnflagged
+					end,
+					set = function(info, value)
+						VoidMark.db.profile.DisableWhenPVPUnflagged = value and true or false
+						VoidMark:ZoneChangedEvent()
 					end,
 				},
 				Alpha = {
@@ -835,11 +836,24 @@ VoidMark.options = {
 					order = 1,
 					fontSize = "medium",
 				},
+				IgnoreBattlegroundStats = {
+					name = "Ignore battleground PvP for stats",
+					desc = "When enabled, battleground kills and deaths are not written to VoidMark kill/death history, W/L records, session K/D, streaks, or fight records. Enemy detection still works in battlegrounds.",
+					type = "toggle",
+					order = 2,
+					width = "full",
+					get = function()
+						return VoidMark.db.profile.IgnoreBattlegroundStats
+					end,
+					set = function(info, value)
+						VoidMark.db.profile.IgnoreBattlegroundStats = value and true or false
+					end,
+				},
 				RemoveUndetected = {
 					name = "Nearby list timeout",
 					desc = "How long an enemy stays in the live Nearby list after activity stops. This only clears the live list; it never deletes the player's saved history.",
 					type = "select",
-					order = 2,
+					order = 3,
 					values = {
 						OneMinute = "1 minute",
 						TwoMinutes = "2 minutes",
@@ -857,9 +871,9 @@ VoidMark.options = {
 					end,
 				},
 				permanent = {
-					name = "Saved enemy history: |cff66ff66PERMANENT|r\nKOS sharing between your own characters: |cff66ff66ON|r\nMap/minimap enemy overlays: |cffff6666OFF|r\nOther VoidMark user data sharing: |cffff6666OFF|r",
+					name = "Saved enemy history: |cff66ff66PERMANENT|r\nKOS sharing between your own characters: |cff66ff66ON|r\nMap/minimap enemy overlays: |cffff6666OFF|r\nOther VoidMark/VoidMark user data sharing: |cffff6666OFF|r",
 					type = "description",
-					order = 3,
+					order = 4,
 				},
 			},
 		},
@@ -1099,7 +1113,8 @@ local Default_Profile = {
 		EnabledInSanctuaries=false,
 		EnabledInArenas=true,
 		EnabledInWintergrasp=true,
-		DisableWhenPVPUnflagged=true,
+		DisableWhenPVPUnflagged=false,
+		IgnoreBattlegroundStats=true,
 		MinimapDetection=false,
 		MinimapDetails=false,
 		DisplayOnMap=false,
@@ -1170,19 +1185,19 @@ local Default_Profile = {
 	},
 }
 
-SM:Register("statusbar", "Flat", [[Interface\Addons\VoidMark\Textures\bar-flat.tga]])
+SM:Register("statusbar", "Flat", [[Interface\AddOns\VoidMarkForever\Textures\bar-flat.tga]])
 
 function VoidMark:CheckDatabase()
 
 	--------------------------------------------------
-	-- TALIAA VOIDMARK SHARED DATABASE
+	-- TALIAA SPY SHARED DATABASE
 	-- Shared across characters on the same faction.
 	-- Horde and Alliance remain separate.
 	--------------------------------------------------
 
 	VoidMarkDB.TaliaaShared = VoidMarkDB.TaliaaShared or {}
 
-	local cluster = (VoidMarkForever and VoidMarkForever.IsForever and "Forever") or "Whitemane"
+	local cluster = "Forever"
 
 	VoidMarkDB.TaliaaShared[cluster] =
 		VoidMarkDB.TaliaaShared[cluster] or {}
@@ -1209,20 +1224,14 @@ function VoidMark:CheckDatabase()
 		VoidMarkPerCharDB.KOSData = {}
 	end
 
-	-- Hunt List was removed from VoidMark. Clear any legacy saved entries so
-	-- the retired feature does not persist in SavedVariables.
-	VoidMarkPerCharDB.HuntData = nil
-
-	-- Remove the retired threat/fight telemetry from existing player records.
-	-- Lifetime wins/losses remain in playerData.wins/playerData.loses.
-	for _, playerData in pairs(VoidMarkPerCharDB.PlayerData) do
-		if type(playerData) == "table" then
-			playerData.threatData = nil
-		end
+	-- Retired list storage remains account-wide on this faction, matching the shared
+	-- TaliaaVoidMark player/KOS database. Cross-account sync is handled in a later stage.
+	if not VoidMarkPerCharDB.HuntData then
+		VoidMarkPerCharDB.HuntData = {}
 	end
 
 	--------------------------------------------------
-	-- END TALIAA VOIDMARK SHARED DATABASE
+	-- END TALIAA SPY SHARED DATABASE
 	--------------------------------------------------
 	if VoidMarkDB.kosData == nil then VoidMarkDB.kosData = {} end
 	if VoidMarkDB.kosData[VoidMark.RealmName] == nil then VoidMarkDB.kosData[VoidMark.RealmName] = {} end
@@ -1314,6 +1323,7 @@ function VoidMark:CheckDatabase()
 	if VoidMark.db.profile.EnabledInArenas == nil then VoidMark.db.profile.EnabledInArenas = Default_Profile.profile.EnabledInArenas end
 	if VoidMark.db.profile.EnabledInWintergrasp == nil then VoidMark.db.profile.EnabledInWintergrasp = Default_Profile.profile.EnabledInWintergrasp end
 	if VoidMark.db.profile.DisableWhenPVPUnflagged == nil then VoidMark.db.profile.DisableWhenPVPUnflagged = Default_Profile.profile.DisableWhenPVPUnflagged end
+	if VoidMark.db.profile.IgnoreBattlegroundStats == nil then VoidMark.db.profile.IgnoreBattlegroundStats = Default_Profile.profile.IgnoreBattlegroundStats end
 	if VoidMark.db.profile.MinimapDetection == nil then VoidMark.db.profile.MinimapDetection = Default_Profile.profile.MinimapDetection end
 	if VoidMark.db.profile.MinimapDetails == nil then VoidMark.db.profile.MinimapDetails = Default_Profile.profile.MinimapDetails end
 	if VoidMark.db.profile.DisplayOnMap == nil then VoidMark.db.profile.DisplayOnMap = Default_Profile.profile.DisplayOnMap end
@@ -1344,6 +1354,16 @@ function VoidMark:CheckDatabase()
 	if VoidMark.db.profile.StopAlertsOnTaxi == nil then VoidMark.db.profile.StopAlertsOnTaxi = Default_Profile.profile.StopAlertsOnTaxi end 	
 	if VoidMark.db.profile.RemoveUndetected == nil then VoidMark.db.profile.RemoveUndetected = Default_Profile.profile.RemoveUndetected end
 	if VoidMark.db.profile.ShowNearbyList == nil then VoidMark.db.profile.ShowNearbyList = Default_Profile.profile.ShowNearbyList end
+
+	-- VoidMark behavior migration: as of 2026-10-02 the window stays visible
+	-- when unflagged by default, and battleground combat is excluded from stats.
+	VoidMarkDB.VoidMarkBehaviorVersion = tonumber(VoidMarkDB.VoidMarkBehaviorVersion) or 0
+	if VoidMarkDB.VoidMarkBehaviorVersion < 1 then
+		VoidMark.db.profile.DisableWhenPVPUnflagged = false
+		VoidMark.db.profile.HideVoidMark = false
+		VoidMark.db.profile.IgnoreBattlegroundStats = true
+		VoidMarkDB.VoidMarkBehaviorVersion = 1
+	end
 	if VoidMark.db.profile.PrioritiseKoS == nil then VoidMark.db.profile.PrioritiseKoS = Default_Profile.profile.PrioritiseKoS end
 	if VoidMark.db.profile.PurgeData == nil then VoidMark.db.profile.PurgeData = Default_Profile.profile.PurgeData end
 	if VoidMark.db.profile.PurgeKoS == nil then VoidMark.db.profile.PurgeKoS = Default_Profile.profile.PurgeKoSData end	
@@ -1382,7 +1402,7 @@ function VoidMark:SetupOptions()
 	self.optionsCategoryIDs = {}
 
  	LibStub("AceConfigRegistry-3.0"):RegisterOptionsTable("VoidMark", VoidMark.options)
-	-- VoidMark command aliases.
+	-- Public commands use the VoidMark name; SavedVariables retain compatibility.
 	LibStub("AceConfig-3.0"):RegisterOptionsTable("VoidMark Commands", VoidMark.optionsSlash, {"voidmark", "vm"})
 
 	local ACD3 = LibStub("AceConfigDialog-3.0")
@@ -1476,24 +1496,25 @@ end
 
 function VoidMark:OnEnable(first)
 	VoidMark.timeid = VoidMark:ScheduleRepeatingTimer("ManageExpirations", 10, true)
-	VoidMark:RegisterEvent("ZONE_CHANGED", "ZoneChangedEvent")
-	VoidMark:RegisterEvent("ZONE_CHANGED_INDOORS", "ZoneChangedEvent")
---	VoidMark:RegisterEvent("ZONE_CHANGED_NEW_AREA", "ZoneChangedEvent")
-	VoidMark:RegisterEvent("ZONE_CHANGED_NEW_AREA", "ZoneChangedNewAreaEvent")
---	VoidMark:RegisterEvent("PLAYER_ENTERING_WORLD", "ZoneChangedEvent")
-	VoidMark:RegisterEvent("PLAYER_ENTERING_WORLD", "PlayerEnteringWorldEvent")
-	VoidMark:RegisterEvent("UNIT_FACTION", "ZoneChangedEvent")
-	VoidMark:RegisterEvent("PLAYER_TARGET_CHANGED", "PlayerTargetEvent")
-	VoidMark:RegisterEvent("UPDATE_MOUSEOVER_UNIT", "PlayerMouseoverEvent")
-	VoidMark:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED", "CombatLogEvent")
-	VoidMark:RegisterEvent("UNIT_PET", "UnitPets")
-	VoidMark:RegisterEvent("PLAYER_REGEN_ENABLED", "LeftCombatEvent")
-	VoidMark:RegisterEvent("PLAYER_DEAD", "PlayerDeadEvent")
-	VoidMark:RegisterEvent("CHAT_MSG_CHANNEL_NOTICE", "ChannelNoticeEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"ZONE_CHANGED", "ZoneChangedEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"ZONE_CHANGED_INDOORS", "ZoneChangedEvent")
+--	VoidMarkForever.RegisterEvent(VoidMark,"ZONE_CHANGED_NEW_AREA", "ZoneChangedEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"ZONE_CHANGED_NEW_AREA", "ZoneChangedNewAreaEvent")
+--	VoidMarkForever.RegisterEvent(VoidMark,"PLAYER_ENTERING_WORLD", "ZoneChangedEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"PLAYER_ENTERING_WORLD", "PlayerEnteringWorldEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"UNIT_FACTION", "ZoneChangedEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"PLAYER_FLAGS_CHANGED", "ZoneChangedEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"PLAYER_TARGET_CHANGED", "PlayerTargetEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"UPDATE_MOUSEOVER_UNIT", "PlayerMouseoverEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"COMBAT_LOG_EVENT_UNFILTERED", "CombatLogEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"UNIT_PET", "UnitPets")
+	VoidMarkForever.RegisterEvent(VoidMark,"PLAYER_REGEN_ENABLED", "LeftCombatEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"PLAYER_DEAD", "PlayerDeadEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"CHAT_MSG_CHANNEL_NOTICE", "ChannelNoticeEvent")
 	-- VoidMark: only inspect a nameplate while its unit token is valid.
 	-- NAME_PLATE_UNIT_REMOVED can arrive after the token is no longer queryable
 	-- in Classic Era and can trigger ERR_NAME_PLATE_UNIT_NAME_REQUIRED.
-	VoidMark:RegisterEvent("NAME_PLATE_UNIT_ADDED", "NamePlateEvent")
+	VoidMarkForever.RegisterEvent(VoidMark,"NAME_PLATE_UNIT_ADDED", "NamePlateEvent")
 	VoidMark.IsEnabled = true
 --	VoidMark:RefreshCurrentList()
 end
@@ -1511,6 +1532,7 @@ function VoidMark:OnDisable()
 	VoidMark:UnregisterEvent("ZONE_CHANGED_INDOORS")
 	VoidMark:UnregisterEvent("PLAYER_ENTERING_WORLD")
 	VoidMark:UnregisterEvent("UNIT_FACTION")
+	VoidMark:UnregisterEvent("PLAYER_FLAGS_CHANGED")
 	VoidMark:UnregisterEvent("PLAYER_TARGET_CHANGED")
 	VoidMark:UnregisterEvent("UPDATE_MOUSEOVER_UNIT")
 	VoidMark:UnregisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
@@ -1552,7 +1574,7 @@ function VoidMark:EnableSound(value)
 end
 
 local TALIAA_WHITEMANE_CLUSTER_REALMS = {
-	["Whitemane"] = true,
+	["Forever"] = true,
 	["Thunderfury"] = true,
 	["Fairbanks"] = true,
 	["Anathema"] = true,
@@ -1565,12 +1587,9 @@ local TALIAA_WHITEMANE_CLUSTER_REALMS = {
 }
 
 local function TaliaaCanonicalRealm(realm)
-	local _, _, _, interfaceVersion = GetBuildInfo()
-	if tonumber(interfaceVersion) == 16001 then
-		return "Forever"
-	end
+	if VoidMarkForever.IsForever then return "Forever" end
 	if TALIAA_WHITEMANE_CLUSTER_REALMS[realm] then
-		return "Whitemane"
+		return "Forever"
 	end
 	return realm
 end
@@ -1592,31 +1611,136 @@ local function TaliaaCopyMissing(dst, src)
 	end
 end
 
+function VoidMark:RecoverLegacyKOS(force)
+	if not VoidMarkDB or not VoidMarkPerCharDB or not VoidMark.FactionName then return 0 end
+
+	VoidMarkPerCharDB.KOSData = VoidMarkPerCharDB.KOSData or {}
+	VoidMarkPerCharDB.PlayerData = VoidMarkPerCharDB.PlayerData or {}
+
+	VoidMarkDB.VoidMarkKOSRecovery = VoidMarkDB.VoidMarkKOSRecovery or {}
+	local recoveryKey = tostring(VoidMark.RealmName or "?") .. "|" .. tostring(VoidMark.FactionName or "?")
+	if not force and tonumber(VoidMarkDB.VoidMarkKOSRecovery[recoveryKey]) and VoidMarkDB.VoidMarkKOSRecovery[recoveryKey] >= 1 then
+		return 0
+	end
+
+	-- Preserve a forensic snapshot of every name we can still find before
+	-- changing anything. We intentionally ignore old removeKOSData tombstones:
+	-- those stale tombstones are the bug that could empty the shared KOS list.
+	VoidMarkDB.VoidMarkKOSRecoveryBackup = VoidMarkDB.VoidMarkKOSRecoveryBackup or {}
+	local backup = {
+		time = time(),
+		existing = {},
+		legacy = {},
+		playerFlags = {},
+	}
+	VoidMarkDB.VoidMarkKOSRecoveryBackup[recoveryKey] = backup
+
+	local recovered = {}
+	local recoveredInfo = {}
+
+	local function Remember(name, added, info, source)
+		if type(name) ~= "string" or name == "" then return end
+		local stamp = tonumber(added) or (type(info) == "table" and tonumber(info.added)) or time()
+		local current = recovered[name]
+		if current == nil or stamp > current then
+			recovered[name] = stamp
+		end
+		if type(info) == "table" then
+			recoveredInfo[name] = recoveredInfo[name] or info
+		end
+		if source then
+			backup[source][name] = stamp
+		end
+	end
+
+	-- Source 1: anything that survived in the authoritative shared list.
+	for name, added in pairs(VoidMarkPerCharDB.KOSData) do
+		Remember(name, added, VoidMarkPerCharDB.PlayerData[name], "existing")
+	end
+
+	-- Source 2: PlayerData.kos flags sometimes survive after KOSData was removed.
+	for name, info in pairs(VoidMarkPerCharDB.PlayerData) do
+		if type(info) == "table" and info.kos == 1 then
+			Remember(name, info.time, info, "playerFlags")
+		end
+	end
+
+	-- Source 3: old VoidMark per-character central KOS mirrors. Union every character
+	-- on the current faction across realms that canonicalize to this cluster.
+	if type(VoidMarkDB.kosData) == "table" then
+		for realm, realmData in pairs(VoidMarkDB.kosData) do
+			if TaliaaCanonicalRealm(realm) == VoidMark.RealmName and type(realmData) == "table" then
+				local factionData = realmData[VoidMark.FactionName]
+				if type(factionData) == "table" then
+					for _, characterData in pairs(factionData) do
+						if type(characterData) == "table" then
+							for name, info in pairs(characterData) do
+								if type(info) == "table" then
+									Remember(name, info.added, info, "legacy")
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	local before = 0
+	for _ in pairs(VoidMarkPerCharDB.KOSData) do before = before + 1 end
+
+	for name, added in pairs(recovered) do
+		VoidMarkPerCharDB.KOSData[name] = added
+		local dst = VoidMarkPerCharDB.PlayerData[name]
+		local src = recoveredInfo[name]
+		if type(dst) ~= "table" then
+			dst = {}
+			VoidMarkPerCharDB.PlayerData[name] = dst
+		end
+		if type(src) == "table" and src ~= dst then
+			TaliaaCopyMissing(dst, src)
+		end
+		dst.name = dst.name or name
+		dst.kos = 1
+	end
+
+	-- Retire destructive tombstones for this faction/cluster.
+	if type(VoidMarkDB.removeKOSData) == "table" then
+		for realm, realmData in pairs(VoidMarkDB.removeKOSData) do
+			if TaliaaCanonicalRealm(realm) == VoidMark.RealmName and type(realmData) == "table" then
+				realmData[VoidMark.FactionName] = {}
+			end
+		end
+	end
+
+	VoidMarkDB.VoidMarkKOSRecovery[recoveryKey] = 1
+
+	local after = 0
+	for _ in pairs(VoidMarkPerCharDB.KOSData) do after = after + 1 end
+	local restored = math.max(0, after - before)
+
+	if DEFAULT_CHAT_FRAME then
+		DEFAULT_CHAT_FRAME:AddMessage(string.format(
+			"|cffb86cff[VoidMark]|r KOS recovery: %d total, %d restored from surviving legacy data.",
+			after, restored
+		))
+	end
+
+	return restored
+end
+
 function VoidMark:MigrateClusterRealmData()
 	if not VoidMarkDB or not VoidMark.ActualRealmName or VoidMark.ActualRealmName == VoidMark.RealmName then return end
 
+	-- Preserve legacy KOS mirrors for one-time recovery only. Do NOT migrate
+	-- removeKOSData tombstones into the canonical cluster; those stale markers
+	-- caused valid KOS entries to be deleted on login in older VoidMark builds.
 	VoidMarkDB.kosData = VoidMarkDB.kosData or {}
 	VoidMarkDB.kosData[VoidMark.RealmName] = VoidMarkDB.kosData[VoidMark.RealmName] or {}
 	if VoidMarkDB.kosData[VoidMark.ActualRealmName] then
 		TaliaaCopyMissing(VoidMarkDB.kosData[VoidMark.RealmName], VoidMarkDB.kosData[VoidMark.ActualRealmName])
 	end
-
-	VoidMarkDB.removeKOSData = VoidMarkDB.removeKOSData or {}
-	VoidMarkDB.removeKOSData[VoidMark.RealmName] = VoidMarkDB.removeKOSData[VoidMark.RealmName] or {}
-	local oldRemoved = VoidMarkDB.removeKOSData[VoidMark.ActualRealmName]
-	if oldRemoved then
-		for faction, players in pairs(oldRemoved) do
-			VoidMarkDB.removeKOSData[VoidMark.RealmName][faction] = VoidMarkDB.removeKOSData[VoidMark.RealmName][faction] or {}
-			for player, removedAt in pairs(players) do
-				local current = VoidMarkDB.removeKOSData[VoidMark.RealmName][faction][player]
-				if current == nil or (tonumber(removedAt) or 0) > (tonumber(current) or 0) then
-					VoidMarkDB.removeKOSData[VoidMark.RealmName][faction][player] = removedAt
-				end
-			end
-		end
-	end
 end
-
 function VoidMark:SanitizeStage1Profile()
 	if not VoidMark.db or not VoidMark.db.profile then return end
 	local profile = VoidMark.db.profile
@@ -1654,10 +1778,13 @@ function VoidMark:SanitizeStage1Profile()
 	-- longer user-configurable and cannot be re-enabled by an old profile.
 	profile.PurgeData = "Never"
 	profile.PurgeKoS = false
+	-- VoidMark uses VoidMarkDB.TaliaaShared for account-wide KOS persistence.
+	-- Disable VoidMark's retired kosData/removeKOSData synchronization layer; stale
+	-- deletion tombstones in that layer could erase the real shared KOS list.
+	profile.ShareKOSBetweenCharacters = false
 	profile.PurgeWinLossData = false
 	profile.ShareData = false
 	profile.UseData = false
-	profile.ShareKOSBetweenCharacters = true
 	profile.MinimapDetection = false
 	profile.MinimapDetails = false
 	profile.DisplayOnMap = false
@@ -1668,7 +1795,7 @@ end
 function VoidMark:OnInitialize()
 	VoidMark.ActualRealmName = GetRealmName()
 	VoidMark.RealmName = TaliaaCanonicalRealm(VoidMark.ActualRealmName)
-    VoidMark.FactionName = select(1, UnitFactionGroup("player"))
+    VoidMark.FactionName = select(1, VMAPI.UnitFactionGroup("player"))
 	if VoidMark.FactionName == "Alliance" then
 		VoidMark.EnemyFactionName = "Horde"
 	elseif VoidMark.FactionName == "Horde" then
@@ -1676,7 +1803,7 @@ function VoidMark:OnInitialize()
 	else
 		VoidMark.EnemyFactionName = "None"
 	end
-	VoidMark.CharacterName = UnitName("player")
+	VoidMark.CharacterName = VMAPI.UnitName("player")
 
 	VoidMark.ValidClasses = {
 		["DRUID"] = true,
@@ -1722,21 +1849,21 @@ function VoidMark:OnInitialize()
 --		["Earthen"] = true,
 	}
 
-	-- One-time database handoff from pre-VoidMark beta builds. The old global
-	-- name is assembled at runtime so the retired branding is not carried in
-	-- the source or TOC. Once saved, only VoidMarkDB is persisted.
-	if VoidMarkDB == nil then
-		local retiredDBKey = "S" .. "pyDB"
-		local retiredDB = rawget(_G, retiredDBKey)
-		if type(retiredDB) == "table" then
-			VoidMarkDB = retiredDB
-			rawset(_G, retiredDBKey, nil)
-		end
-	end
-
 	local acedb = LibStub:GetLibrary("AceDB-3.0")
 
 	VoidMark.db = acedb:New("VoidMarkDB", Default_Profile)
+
+	-- One-time behavior migration for existing profiles. AceDB preserves old
+	-- profile values, so changing defaults alone would not make current installs
+	-- stay visible or exclude battleground stats.
+	VoidMarkDB.VoidMarkBehaviorVersion = tonumber(VoidMarkDB.VoidMarkBehaviorVersion) or 0
+	if VoidMarkDB.VoidMarkBehaviorVersion < 1 then
+		VoidMark.db.profile.DisableWhenPVPUnflagged = false
+		VoidMark.db.profile.HideVoidMark = false
+		VoidMark.db.profile.IgnoreBattlegroundStats = true
+		VoidMarkDB.VoidMarkBehaviorVersion = 1
+	end
+
 	VoidMark:MigrateClusterRealmData()
 	VoidMark:SanitizeStage1Profile()
 	VoidMark:CheckDatabase()
@@ -1752,12 +1879,10 @@ function VoidMark:OnInitialize()
 	VoidMarkTempTooltip = CreateFrame("GameTooltip", "VoidMarkTempTooltip", nil, "GameTooltipTemplate")
 	VoidMarkTempTooltip:SetOwner(UIParent, "ANCHOR_NONE")
 
+	-- Recover KOS names from surviving legacy mirrors once, then use only
+	-- TaliaaShared.KOSData. Never consume removeKOSData tombstones again.
+	VoidMark:RecoverLegacyKOS(false)
 	VoidMark:RegenerateKOSGuildList()
-	if VoidMark.db.profile.ShareKOSBetweenCharacters then
-		VoidMark:RemoveLocalKOSPlayers()
-		VoidMark:RegenerateKOSCentralList()
-		VoidMark:RegenerateKOSListFromCentral()
-	end
 	VoidMark:PurgeUndetectedData()
 	VoidMark:CreateMainWindow()
 	VoidMark:CreateKoSButton()
@@ -1821,14 +1946,17 @@ function VoidMark:ZoneChangedNewAreaEvent()
 	end
 end
 
+function VoidMark:ShouldIgnoreBattlegroundStats()
+	if not (VoidMark.db and VoidMark.db.profile and VoidMark.db.profile.IgnoreBattlegroundStats) then
+		return false
+	end
+	local inInstance, instanceType = VMAPI.IsInInstance()
+	return inInstance == true and instanceType == "pvp"
+end
+
 function VoidMark:ZoneChanged()
 	VoidMark.InInstance = false
-	local pvpType
-	if C_PvP and C_PvP.GetZonePVPInfo then
-		pvpType = C_PvP.GetZonePVPInfo()
-	elseif GetZonePVPInfo then
-		pvpType = GetZonePVPInfo()
-	end
+	local pvpType = VMAPI.GetZonePVPInfo()
  	local zone = GetZoneText()
 	local subZone = GetSubZoneText()
 	local InFilteredZone = VoidMark:InFilteredZone(zone, subZone)
@@ -1840,7 +1968,7 @@ function VoidMark:ZoneChanged()
 			VoidMark.EnabledInZone = false
 		else
 			VoidMark.EnabledInZone = true
-			local inInstance, instanceType = IsInInstance()
+			local inInstance, instanceType = VMAPI.IsInInstance()
 			if inInstance then
 				VoidMark.InInstance = true
 				if instanceType == "party" or instanceType == "raid" or (not VoidMark.db.profile.EnabledInBattlegrounds and instanceType == "pvp") or (not VoidMark.db.profile.EnabledInArenas and instanceType == "arena") then
@@ -1851,7 +1979,7 @@ function VoidMark:ZoneChanged()
 					VoidMark.EnabledInZone = false
 				end
 --			elseif (pvpType == "friendly" or pvpType == nil) then
-			elseif UnitIsPVP("player") == false and VoidMark.db.profile.DisableWhenPVPUnflagged then
+			elseif VMAPI.UnitIsPVP("player") == false and VoidMark.db.profile.DisableWhenPVPUnflagged then
 				VoidMark.EnabledInZone = false
 --				end
 			end
@@ -1884,38 +2012,38 @@ end
 
 function VoidMark:PlayerTargetEvent()
 	local name = GetUnitName("target", true)
-	if name and UnitIsPlayer("target") and not VoidMarkPerCharDB.IgnoreData[name] then
+	if name and VMAPI.UnitIsPlayer("target") and not VoidMarkPerCharDB.IgnoreData[name] then
 		local playerData = VoidMarkPerCharDB.PlayerData[name]
-		if UnitIsEnemy("player", "target") then
+		if VMAPI.UnitIsEnemy("player", "target") then
 			name = string.gsub(name, " %- ", "-")
 
 			local learnt = true
 			if playerData and playerData.isGuess == false then learnt = false end
 
-			local x, class = UnitClass("target")
-			local race = select(1,UnitRace("target"))
-			local level = tonumber(UnitLevel("target"))
-			local guild = GetGuildInfo("target")
-			local faction = select(1,UnitFactionGroup("target"))
+			local x, class = VMAPI.UnitClass("target")
+			local race = select(1,VMAPI.UnitRace("target"))
+			local level = tonumber(VMAPI.UnitLevel("target"))
+			local guild = VMAPI.GetGuildInfo("target")
+			local faction = select(1,VMAPI.UnitFactionGroup("target"))
 			local guess = false
 			if level == VoidMark.Skull then
 				if playerData and playerData.level then
-					if playerData.level > (UnitLevel("player") + 10) and playerData.level < VoidMark.MaximumPlayerLevel then	
+					if playerData.level > (VMAPI.UnitLevel("player") + 10) and playerData.level < VoidMark.MaximumPlayerLevel then	
 						guess = true
 						level = nil
-					elseif UnitLevel("player") < VoidMark.MaximumPlayerLevel - 9 then
+					elseif VMAPI.UnitLevel("player") < VoidMark.MaximumPlayerLevel - 9 then
 						guess = true
-						level = UnitLevel("player") + 10
+						level = VMAPI.UnitLevel("player") + 10
 					end	
 				else
 					guess = true
-					level = UnitLevel("player") + 10
+					level = VMAPI.UnitLevel("player") + 10
 				end
 --			else
 --				guess = true
 --				level = nil
 			end
-			local rankName, rank = GetPVPRankInfo(UnitPVPRank("target"))
+			local rankName, rank = GetPVPRankInfo(VoidMarkForever.API.UnitPVPRank("target"))
 			if ( not rank ) then
 				rank = nil
 			end
@@ -1932,38 +2060,38 @@ end
 
 function VoidMark:PlayerMouseoverEvent()
 	local name = GetUnitName("mouseover", true)
-	if name and UnitIsPlayer("mouseover") and not VoidMarkPerCharDB.IgnoreData[name] then
+	if name and VMAPI.UnitIsPlayer("mouseover") and not VoidMarkPerCharDB.IgnoreData[name] then
 		local playerData = VoidMarkPerCharDB.PlayerData[name]
-		if UnitIsEnemy("player", "mouseover") then
+		if VMAPI.UnitIsEnemy("player", "mouseover") then
 			name = string.gsub(name, " %- ", "-")
 
 			local learnt = true
 			if playerData and playerData.isGuess == false then learnt = false end
 
-			local x, class = UnitClass("mouseover")
-			local race = select(1,UnitRace("mouseover"))
-			local level = tonumber(UnitLevel("mouseover"))
-			local guild = GetGuildInfo("mouseover")
-			local faction = select(1,UnitFactionGroup("mouseover"))
+			local x, class = VMAPI.UnitClass("mouseover")
+			local race = select(1,VMAPI.UnitRace("mouseover"))
+			local level = tonumber(VMAPI.UnitLevel("mouseover"))
+			local guild = VMAPI.GetGuildInfo("mouseover")
+			local faction = select(1,VMAPI.UnitFactionGroup("mouseover"))
 			local guess = false
 			if level == VoidMark.Skull then
 				if playerData and playerData.level then
-					if playerData.level > (UnitLevel("player") + 10) and playerData.level < VoidMark.MaximumPlayerLevel then	
+					if playerData.level > (VMAPI.UnitLevel("player") + 10) and playerData.level < VoidMark.MaximumPlayerLevel then	
 						guess = true
 						level = nil
-					elseif UnitLevel("player") < VoidMark.MaximumPlayerLevel - 9 then
+					elseif VMAPI.UnitLevel("player") < VoidMark.MaximumPlayerLevel - 9 then
 						guess = true
-						level = UnitLevel("player") + 10
+						level = VMAPI.UnitLevel("player") + 10
 					end	
 				else
 					guess = true
-					level = UnitLevel("player") + 10
+					level = VMAPI.UnitLevel("player") + 10
 				end
 --			else
 --				guess = true
 --				level = nil
 			end
-			local rankName, rank = GetPVPRankInfo(UnitPVPRank("mouseover"))
+			local rankName, rank = GetPVPRankInfo(VoidMarkForever.API.UnitPVPRank("mouseover"))
 			if ( not rank ) then
 				rank = nil
 			end
@@ -1982,41 +2110,41 @@ function VoidMark:NamePlateEvent(event, unit)
 	-- Only NAME_PLATE_UNIT_ADDED is registered now, but keep this guard in
 	-- place so an invalid/expired nameplate token can never be queried.
 	if event ~= "NAME_PLATE_UNIT_ADDED" then return end
-	if type(unit) ~= "string" or unit == "" or not UnitExists(unit) then return end
+	if type(unit) ~= "string" or unit == "" or not VMAPI.UnitExists(unit) then return end
 
 	local name = GetUnitName(unit, true)
-	if name and name ~= "" and UnitIsPlayer(unit) and not VoidMarkPerCharDB.IgnoreData[name] then
+	if name and name ~= "" and VMAPI.UnitIsPlayer(unit) and not VoidMarkPerCharDB.IgnoreData[name] then
 		local playerData = VoidMarkPerCharDB.PlayerData[name]
-		if UnitIsEnemy("player", unit) then
+		if VMAPI.UnitIsEnemy("player", unit) then
 			name = string.gsub(name, " %- ", "-")
 
 			local learnt = true
 			if playerData and playerData.isGuess == false then learnt = false end
 
-			local x, class = UnitClass(unit)
-			local race = select(1,UnitRace(unit))
-			local level = tonumber(UnitLevel(unit))
-			local guild = GetGuildInfo(unit)
-			local faction = select(1,UnitFactionGroup(unit))
+			local x, class = VMAPI.UnitClass(unit)
+			local race = select(1,VMAPI.UnitRace(unit))
+			local level = tonumber(VMAPI.UnitLevel(unit))
+			local guild = VMAPI.GetGuildInfo(unit)
+			local faction = select(1,VMAPI.UnitFactionGroup(unit))
 			local guess = false
 			if level == VoidMark.Skull then
 				if playerData and playerData.level then
-					if playerData.level > (UnitLevel("player") + 10) and playerData.level < VoidMark.MaximumPlayerLevel then	
+					if playerData.level > (VMAPI.UnitLevel("player") + 10) and playerData.level < VoidMark.MaximumPlayerLevel then	
 						guess = true
 						level = nil
-					elseif UnitLevel("player") < VoidMark.MaximumPlayerLevel - 9 then
+					elseif VMAPI.UnitLevel("player") < VoidMark.MaximumPlayerLevel - 9 then
 						guess = true
-						level = UnitLevel("player") + 10
+						level = VMAPI.UnitLevel("player") + 10
 					end	
 				else
 					guess = true
-					level = UnitLevel("player") + 10
+					level = VMAPI.UnitLevel("player") + 10
 				end
 --			else
 --				guess = true
 --				level = nil
 			end
-			local rankName, rank = GetPVPRankInfo(UnitPVPRank(unit))
+			local rankName, rank = GetPVPRankInfo(VoidMarkForever.API.UnitPVPRank(unit))
 			if ( not rank ) then
 				rank = nil
 			end
@@ -2033,20 +2161,34 @@ end
 
 
 --------------------------------------------------
--- VOIDMARK PVP ENGAGEMENT TRACKING
--- Lightweight recent-damage timestamps used only for kill/death attribution.
--- No threat score, confidence, fight telemetry, or damage totals are stored.
+-- TALIAA SPY THREAT TRACKING
+-- Uses VoidMark's existing combat log / death events.
 --------------------------------------------------
 
+VoidMark.ThreatCombat = VoidMark.ThreatCombat or {}
+VoidMark.ThreatDebug = false
+
+local TALIAA_THREAT_DEATH_CREDIT_WINDOW = 10
+local TALIAA_THREAT_FIGHT_TIMEOUT = 15
+local TALIAA_THREAT_POST_FIGHT_LOCKOUT = 3
+
+-- Prevent trailing combat-log events from immediately reopening
+-- an encounter that just ended as a WIN or LOSS.
+VoidMark.ThreatFightLockout = VoidMark.ThreatFightLockout or {}
+
+-- Gank credit is kept separate from the active threat fight.
+-- This lets a player still count as a gank if they die from your DoT
+-- or shortly after combat drops.
 VoidMark.GankRecentDamage = VoidMark.GankRecentDamage or {}
-VoidMark.RecentEnemyDamage = VoidMark.RecentEnemyDamage or {}
+local TALIAA_GANK_CREDIT_WINDOW = 30
 
-local VOIDMARK_DEATH_CREDIT_WINDOW = 10
-local VOIDMARK_GANK_CREDIT_WINDOW = 30
-local VOIDMARK_RECENT_COMBAT_RETENTION = 60
-local VoidMarkLastPvPPrune = 0
+local function TaliaaThreatPrint(message)
+	if VoidMark.ThreatDebug then
+		DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[Taliaa Threat]|r " .. tostring(message))
+	end
+end
 
-local function VoidMarkIsHostilePlayer(flags, guid)
+local function TaliaaThreatIsHostilePlayer(flags, guid)
 	if not flags or not guid then
 		return false
 	end
@@ -2056,7 +2198,210 @@ local function VoidMarkIsHostilePlayer(flags, guid)
 	return bit.band(flags, COMBATLOG_OBJECT_REACTION_HOSTILE) == COMBATLOG_OBJECT_REACTION_HOSTILE
 end
 
-local function VoidMarkDamageAmount(event, arg12, arg13, arg14, arg15)
+local function TaliaaThreatGetPlayerData(player)
+	if not player or not VoidMarkPerCharDB or not VoidMarkPerCharDB.PlayerData then
+		return nil
+	end
+
+	local playerData = VoidMarkPerCharDB.PlayerData[player]
+	if not playerData then
+		return nil
+	end
+
+	if not playerData.threatData then
+		playerData.threatData = {}
+	end
+
+	local threat = playerData.threatData
+	if not threat.fights then threat.fights = 0 end
+	if not threat.wins then threat.wins = 0 end
+	if not threat.losses then threat.losses = 0 end
+	if not threat.disengaged then threat.disengaged = 0 end
+	if not threat.interrupted then threat.interrupted = 0 end
+	if not threat.damageDone then threat.damageDone = 0 end
+	if not threat.damageTaken then threat.damageTaken = 0 end
+	if not threat.totalCombatTime then threat.totalCombatTime = 0 end
+	if not threat.totalWinTime then threat.totalWinTime = 0 end
+	if not threat.totalLossTime then threat.totalLossTime = 0 end
+	if not threat.threatScore then threat.threatScore = 0 end
+	if not threat.threatLevel then threat.threatLevel = 0 end
+
+	return playerData
+end
+
+
+local function TaliaaClamp(value, low, high)
+	if value < low then return low end
+	if value > high then return high end
+	return value
+end
+
+local function TaliaaThreatLabel(score)
+	if score >= 81 then
+		return "EXTREME", "|cffff0000"
+	elseif score >= 61 then
+		return "DANGEROUS", "|cffff7f00"
+	elseif score >= 41 then
+		return "EVEN", "|cffffff00"
+	elseif score >= 21 then
+		return "FAVORABLE", "|cff00ff00"
+	else
+		return "EASY", "|cff66ff66"
+	end
+end
+
+local function TaliaaThreatConfidence(completed)
+	if completed >= 10 then
+		return "High"
+	elseif completed >= 5 then
+		return "Moderate"
+	elseif completed >= 2 then
+		return "Low"
+	else
+		return "Very Low"
+	end
+end
+
+function VoidMark:CalculateThreatScore(player)
+	local playerData = TaliaaThreatGetPlayerData(player)
+	if not playerData then return 50, "UNKNOWN", "No Data" end
+	local t = playerData.threatData
+	local wins, losses = t.wins or 0, t.losses or 0
+	local completed = wins + losses
+	local score, level = 50, "UNKNOWN"
+	if completed > 0 then
+		score = math.floor(((losses / completed) * 100) + 0.5)
+		if wins > losses then level = "LOW"
+		elseif losses > wins then level = "HIGH"
+		else level = "EVEN" end
+	end
+	local confidence = completed == 0 and "No Data" or TaliaaThreatConfidence(completed)
+	t.threatScore, t.threatLevel, t.threatConfidence = score, level, confidence
+	t.lastThreatUpdate = time()
+	return score, level, confidence
+end
+
+function VoidMark:StartThreatFight(player)
+	if not player then
+		return nil
+	end
+
+	-- Do not let delayed combat-log events create a new encounter
+	-- after the player has already died or released.
+	if VMAPI.UnitIsDeadOrGhost("player") then
+		return nil
+	end
+
+	local lockoutUntil = VoidMark.ThreatFightLockout[player]
+	if lockoutUntil then
+		if GetTime() < lockoutUntil then
+			return nil
+		end
+		VoidMark.ThreatFightLockout[player] = nil
+	end
+
+	local fight = VoidMark.ThreatCombat[player]
+	if not fight then
+		local now = GetTime()
+		fight = {
+			startTime = now,
+			lastEventTime = now,
+			lastTakenTime = nil,
+			damageDone = 0,
+			damageTaken = 0,
+		}
+		VoidMark.ThreatCombat[player] = fight
+		TaliaaThreatPrint("Fight started: " .. player)
+	end
+
+	return fight
+end
+
+function VoidMark:FinishThreatFight(player, result)
+	local fight = VoidMark.ThreatCombat[player]
+	if not fight then
+		return
+	end
+
+	if VoidMark:ShouldIgnoreBattlegroundStats() then
+		VoidMark.ThreatCombat[player] = nil
+		return
+	end
+
+	local playerData = TaliaaThreatGetPlayerData(player)
+	if not playerData then
+		VoidMark.ThreatCombat[player] = nil
+		return
+	end
+
+	local threat = playerData.threatData
+	local duration = GetTime() - fight.startTime
+	if duration < 0.1 then
+		duration = 0.1
+	end
+
+	threat.fights = threat.fights + 1
+	threat.damageDone = threat.damageDone + fight.damageDone
+	threat.damageTaken = threat.damageTaken + fight.damageTaken
+	threat.totalCombatTime = threat.totalCombatTime + duration
+	threat.lastFightTime = time()
+	threat.lastResult = result
+
+	if result == "WIN" then
+		threat.wins = threat.wins + 1
+		threat.totalWinTime = threat.totalWinTime + duration
+		if not threat.fastestWin or duration < threat.fastestWin then
+			threat.fastestWin = duration
+		end
+	elseif result == "LOSS" then
+		threat.losses = threat.losses + 1
+		threat.totalLossTime = threat.totalLossTime + duration
+		if not threat.fastestLoss or duration < threat.fastestLoss then
+			threat.fastestLoss = duration
+		end
+	elseif result == "INTERRUPTED" then
+		threat.interrupted = threat.interrupted + 1
+	else
+		threat.disengaged = threat.disengaged + 1
+	end
+
+	local completedFights = threat.wins + threat.losses
+	local threatScore, threatLevel, confidence = VoidMark:CalculateThreatScore(player)
+	local _, threatColor = TaliaaThreatLabel(threatScore)
+
+	-- Threat results are stored and remain available to the VoidMark window/tooltip,
+	-- but completed fights no longer print a summary to the normal chat frame.
+	if VoidMark.ThreatDebug and result ~= "WIN" and result ~= "LOSS" then
+		TaliaaThreatPrint(string.format(
+			"%s | %s | %.1fs | Done: %d | Taken: %d",
+			player,
+			result,
+			duration,
+			fight.damageDone,
+			fight.damageTaken
+		))
+	end
+
+	VoidMark.ThreatCombat[player] = nil
+
+	-- Only completed fights get the short lockout. A normal disengagement
+	-- can reopen immediately if actual PvP damage resumes.
+	if result == "WIN" or result == "LOSS" then
+		VoidMark.ThreatFightLockout[player] = GetTime() + TALIAA_THREAT_POST_FIGHT_LOCKOUT
+	end
+end
+
+function VoidMark:FinishAllThreatFights(result)
+	local players = {}
+	for player in pairs(VoidMark.ThreatCombat) do
+		table.insert(players, player)
+	end
+	for _, player in ipairs(players) do
+		VoidMark:FinishThreatFight(player, result or "DISENGAGED")
+	end
+end
+
+local function TaliaaThreatDamageAmount(event, arg12, arg13, arg14, arg15)
 	if event == "SWING_DAMAGE" then
 		return tonumber(arg12) or 0
 	elseif event == "RANGE_DAMAGE"
@@ -2068,55 +2413,184 @@ local function VoidMarkDamageAmount(event, arg12, arg13, arg14, arg15)
 	return 0
 end
 
-local function VoidMarkPruneRecentPvP(now)
-	if (now - VoidMarkLastPvPPrune) < 10 then
-		return
-	end
-	VoidMarkLastPvPPrune = now
-
-	for player, stamp in pairs(VoidMark.GankRecentDamage) do
-		if (now - (tonumber(stamp) or 0)) > VOIDMARK_RECENT_COMBAT_RETENTION then
-			VoidMark.GankRecentDamage[player] = nil
-		end
-	end
-	for player, stamp in pairs(VoidMark.RecentEnemyDamage) do
-		if (now - (tonumber(stamp) or 0)) > VOIDMARK_RECENT_COMBAT_RETENTION then
-			VoidMark.RecentEnemyDamage[player] = nil
-		end
-	end
-end
-
-local function VoidMarkTrackPvPDamage(event, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, arg12, arg13, arg14, arg15)
-	local amount = VoidMarkDamageAmount(event, arg12, arg13, arg14, arg15)
+local function TaliaaThreatTrackDamage(event, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, arg12, arg13, arg14, arg15)
+	local amount = TaliaaThreatDamageAmount(event, arg12, arg13, arg14, arg15)
 	if amount <= 0 then
 		return
 	end
 
-	local playerGUID = UnitGUID("player")
+	local playerGUID = VMAPI.UnitGUID("player")
 	local now = GetTime()
-	VoidMarkPruneRecentPvP(now)
 
-	-- We damaged a hostile player: retain a short assist-credit window.
+	-- You damaged a hostile player.
 	if srcGUID == playerGUID
 		and dstName
-		and VoidMarkIsHostilePlayer(dstFlags, dstGUID)
+		and TaliaaThreatIsHostilePlayer(dstFlags, dstGUID)
 	then
+		-- Keep independent gank-credit history even if the active
+		-- threat encounter later times out or combat drops.
 		VoidMark.GankRecentDamage[dstName] = now
+
+		local fight = VoidMark:StartThreatFight(dstName)
+		if fight then
+			fight.damageDone = fight.damageDone + amount
+			fight.lastEventTime = now
+		end
 		return
 	end
 
-	-- A hostile player damaged us: retain only the most recent hit time so a
-	-- PLAYER_DEAD event can assign the lifetime loss to the likely killer.
+	-- A hostile player damaged you.
 	if dstGUID == playerGUID
 		and srcName
-		and VoidMarkIsHostilePlayer(srcFlags, srcGUID)
+		and TaliaaThreatIsHostilePlayer(srcFlags, srcGUID)
 	then
-		VoidMark.RecentEnemyDamage[srcName] = now
+		local fight = VoidMark:StartThreatFight(srcName)
+		if fight then
+			fight.damageTaken = fight.damageTaken + amount
+			fight.lastEventTime = now
+			fight.lastTakenTime = now
+		end
 	end
 end
 
+SLASH_TALIAATHREAT1 = "/tthreat"
+SlashCmdList["TALIAATHREAT"] = function(msg)
+	local command = strlower(msg or "")
+
+	if command == "" or command == "status" then
+		local count = 0
+		for _ in pairs(VoidMark.ThreatCombat) do
+			count = count + 1
+		end
+		DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[Taliaa Threat]|r Active fights: " .. count)
+		return
+	end
+
+	if command == "debug" then
+		VoidMark.ThreatDebug = not VoidMark.ThreatDebug
+		DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[Taliaa Threat]|r Debug: " .. tostring(VoidMark.ThreatDebug))
+		return
+	end
+
+	if command == "target" then
+		local name, realm = VMAPI.UnitName("target")
+		if not name then
+			DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[Taliaa Threat]|r No target.")
+			return
+		end
+
+		if realm and realm ~= "" then
+			name = name .. "-" .. realm
+		end
+
+		local playerData = VoidMarkPerCharDB
+			and VoidMarkPerCharDB.PlayerData
+			and VoidMarkPerCharDB.PlayerData[name]
+
+		if not playerData or not playerData.threatData then
+			DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[Taliaa Threat]|r No threat data for " .. name)
+			return
+		end
+
+		local threat = playerData.threatData
+		local wins = threat.wins or 0
+		local losses = threat.losses or 0
+		local disengaged = threat.disengaged or 0
+		local interrupted = threat.interrupted or 0
+		local encounters = threat.fights or 0
+		local completed = wins + losses
+		local winRate = 0
+		local avgEncounter = 0
+		local avgWin = 0
+		local avgLoss = 0
+
+		if completed > 0 then
+			winRate = (wins / completed) * 100
+		end
+		if encounters > 0 then
+			avgEncounter = (threat.totalCombatTime or 0) / encounters
+		end
+		if wins > 0 then
+			avgWin = (threat.totalWinTime or 0) / wins
+		end
+		if losses > 0 then
+			avgLoss = (threat.totalLossTime or 0) / losses
+		end
+
+		local score, level, confidence = VoidMark:CalculateThreatScore(name)
+		local _, threatColor = TaliaaThreatLabel(score)
+
+		DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[Taliaa Threat]|r " .. name)
+		DEFAULT_CHAT_FRAME:AddMessage(string.format(
+			"|cff00ff00[Taliaa Threat]|r Threat: %s%s %d/100|r | Confidence: %s",
+			threatColor,
+			level,
+			score,
+			confidence
+		))
+		DEFAULT_CHAT_FRAME:AddMessage(string.format(
+			"|cff00ff00[Taliaa Threat]|r Record: %dW-%dL | Completed: %d | Win Rate: %.0f%%",
+			wins,
+			losses,
+			completed,
+			winRate
+		))
+		DEFAULT_CHAT_FRAME:AddMessage(string.format(
+			"|cff00ff00[Taliaa Threat]|r Avg Encounter: %.1fs | Avg Win: %.1fs | Avg Loss: %.1fs",
+			avgEncounter,
+			avgWin,
+			avgLoss
+		))
+		DEFAULT_CHAT_FRAME:AddMessage(string.format(
+			"|cff00ff00[Taliaa Threat]|r Damage Done: %d | Taken: %d",
+			threat.damageDone or 0,
+			threat.damageTaken or 0
+		))
+		DEFAULT_CHAT_FRAME:AddMessage(string.format(
+			"|cff00ff00[Taliaa Threat]|r Disengaged: %d | Interrupted: %d | Total Encounters: %d",
+			disengaged,
+			interrupted,
+			encounters
+		))
+		return
+	end
+
+	DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[Taliaa Threat]|r Commands: /tthreat status, /tthreat target, /tthreat debug")
+end
+
+--------------------------------------------------
+-- END TALIAA SPY THREAT TRACKING
+--------------------------------------------------
+
+
+-- Close unresolved PvP encounters only after 15 seconds without
+-- direct damage between you and that enemy.
+local TaliaaThreatTimeoutFrame = CreateFrame("Frame")
+local TaliaaThreatTimeoutElapsed = 0
+
+TaliaaThreatTimeoutFrame:SetScript("OnUpdate", function(self, elapsed)
+	TaliaaThreatTimeoutElapsed = TaliaaThreatTimeoutElapsed + elapsed
+	if TaliaaThreatTimeoutElapsed < 1 then
+		return
+	end
+	TaliaaThreatTimeoutElapsed = 0
+
+	local now = GetTime()
+	local expired = {}
+
+	for player, fight in pairs(VoidMark.ThreatCombat) do
+		if fight.lastEventTime and (now - fight.lastEventTime) >= TALIAA_THREAT_FIGHT_TIMEOUT then
+			table.insert(expired, player)
+		end
+	end
+
+	for _, player in ipairs(expired) do
+		VoidMark:FinishThreatFight(player, "DISENGAGED")
+	end
+end)
+
 function VoidMark:CombatLogEvent(info, timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGUID, dstName, dstFlags, destRaidFlags, ...)
-timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGUID, dstName, dstFlags, destRaidFlags, arg12, arg13, arg14, arg15, arg16 = CombatLogGetCurrentEventInfo()
+timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGUID, dstName, dstFlags, destRaidFlags, arg12, arg13, arg14, arg15, arg16 = VMAPI.CombatLogGetCurrentEventInfo()
 	if VoidMark.EnabledInZone then
 		
 		--PetKill code start
@@ -2127,7 +2601,7 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 			["SPELL_PERIODIC_DAMAGE"] = true,
 		}	
 		local spellID, spellName, spellSchool, amount, overkill 
-		local petName = UnitName("pet"); 
+		local petName = VMAPI.UnitName("pet"); 
 		local _, overkill 	
 		overkill = 0;		--PetKill code end
 	
@@ -2135,7 +2609,7 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 		if bit.band(srcFlags, COMBATLOG_OBJECT_REACTION_HOSTILE) == COMBATLOG_OBJECT_REACTION_HOSTILE and srcGUID and srcName and not VoidMarkPerCharDB.IgnoreData[srcName] then
 			local srcType = strsub(srcGUID, 1,6)
 			if srcType == "Player" then
-				local _, class, race, raceFile, _, name = GetPlayerInfoByGUID(srcGUID)
+				local _, class, race, raceFile, _, name = VMAPI.GetPlayerInfoByGUID(srcGUID)
 				if not VoidMark.ValidClasses[class] then
 					class = nil
 				end	
@@ -2165,7 +2639,7 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 				end
 			end
 
-			if dstGUID == UnitGUID("player") then
+			if dstGUID == VMAPI.UnitGUID("player") then
 				VoidMark.LastAttack = srcName
 				VoidMark.LastAttackTime = GetTime()
 			end
@@ -2175,7 +2649,7 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 		if bit.band(dstFlags, COMBATLOG_OBJECT_REACTION_HOSTILE) == COMBATLOG_OBJECT_REACTION_HOSTILE and dstGUID and dstName and not VoidMarkPerCharDB.IgnoreData[dstName] then
 			local dstType = strsub(dstGUID, 1,6)
 			if dstType == "Player" then
-				local _, class, race, raceFile, _, name = GetPlayerInfoByGUID(dstGUID)
+				local _, class, race, raceFile, _, name = VMAPI.GetPlayerInfoByGUID(dstGUID)
 				if not VoidMark.ValidClasses[class] then
 					class = nil
 				end	
@@ -2197,14 +2671,43 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 			end
 		end
 
-		-- Track only the recent PvP timestamps needed for kill/death attribution.
+		-- Taliaa VoidMark: track direct player-vs-player damage using VoidMark's existing combat event
 		if combatEvent[event] then
-			VoidMarkTrackPvPDamage(event, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, arg12, arg13, arg14, arg15)
+			TaliaaThreatTrackDamage(event, srcGUID, srcName, srcFlags, dstGUID, dstName, dstFlags, arg12, arg13, arg14, arg15)
 		end
 
-		-- Gank Tracker assist credit: count a hostile player death when we
-		-- damaged that player recently, even if somebody else got the killing blow.
+		-- Gank Tracker assist credit:
+		-- If a hostile player dies while we have an active Taliaa threat fight
+		-- with them, count the gank even when somebody else got the killing blow.
 		if event == "UNIT_DIED" and dstName and dstGUID then
+			-- Classic Era 1.15.9 observation: a real Hunter death sends PARTY_KILL
+			-- before UNIT_DIED; Feign sends UNIT_DIED alone with unconscious=false.
+			-- GankTracker remembers the authoritative PARTY_KILL signal.
+			if TaliaaGankTracker and TaliaaGankTracker.ShouldSuppressHunterUnitDied
+				and TaliaaGankTracker:ShouldSuppressHunterUnitDied(dstName, dstGUID) then
+				if TaliaaGankTracker.HandleHunterUnitDied then
+					TaliaaGankTracker:HandleHunterUnitDied(dstGUID, dstName)
+				end
+				VoidMark.GankRecentDamage[dstName] = nil
+				return
+			end
+
+			-- Hunter Feign can be identified by the unconsciousOnDeath flag when
+			-- present, or by the live-unit fallback when the client omits it.
+			local feignDetected = (arg13 == 1 or arg13 == true or arg13 == "1")
+			if not feignDetected and TaliaaGankTracker and TaliaaGankTracker.IsUnitCurrentlyFeigningName then
+				feignDetected = TaliaaGankTracker:IsUnitCurrentlyFeigningName(dstName)
+			end
+			if feignDetected then
+				if TaliaaGankTracker and TaliaaGankTracker.HandleHunterFeign then
+					TaliaaGankTracker:HandleHunterFeign(dstGUID, dstName)
+				end
+				VoidMark.GankRecentDamage[dstName] = nil
+				return
+			end
+
+			-- UNIT_DIED / PARTY_KILL flags are not always identical in Classic.
+			-- GUID is the reliable player test; VoidMark's database confirms enemy status.
 			local isPlayerVictim = strsub(dstGUID, 1, 6) == "Player"
 			local playerData = VoidMarkPerCharDB
 				and VoidMarkPerCharDB.PlayerData
@@ -2215,17 +2718,62 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 			local recentlyEngaged = recentDamage
 				and (GetTime() - recentDamage) <= VOIDMARK_GANK_CREDIT_WINDOW
 
-			if isPlayerVictim and isEnemyVictim and recentlyEngaged then
+			if isPlayerVictim and isEnemyVictim
+				and (recentlyEngaged or VoidMark.ThreatCombat[dstName])
+			then
+				-- Count the gank immediately, even if somebody else got the KB.
 				if TaliaaGankTracker and TaliaaGankTracker.RecordKill then
-					TaliaaGankTracker:RecordKill(dstName, dstGUID)
+					TaliaaGankTracker:RecordKill(dstName, dstGUID, false)
 				end
 				VoidMark.GankRecentDamage[dstName] = nil
+
+				-- Do NOT close the threat fight immediately. PARTY_KILL can arrive
+				-- just after UNIT_DIED. Give it a moment so a real KB becomes WIN.
+				if VoidMark.ThreatCombat[dstName] then
+					local deadName = dstName
+					C_Timer.After(0.30, function()
+						if VoidMark.ThreatCombat[deadName] then
+							VoidMark:FinishThreatFight(deadName, "INTERRUPTED")
+						end
+					end)
+				end
 			end
 		end
+
+		-- Feign Death is reported as an unconscious kill-credit event.
+		-- Stop it before the normal PARTY_KILL path can record a real gank.
+		-- arg13 is unconsciousOnDeath for PARTY_KILL.
+		if event == "PARTY_KILL" and dstName and dstGUID then
+			-- PARTY_KILL stores unconsciousOnDeath in arg16 on Classic's
+			-- combat-log payload. Keep arg13 as a compatibility fallback.
+			local feignDetected = (arg16 == 1 or arg16 == true or arg16 == "1"
+				or arg13 == 1 or arg13 == true or arg13 == "1")
+			if not feignDetected and TaliaaGankTracker and TaliaaGankTracker.IsUnitCurrentlyFeigningName then
+				feignDetected = TaliaaGankTracker:IsUnitCurrentlyFeigningName(dstName)
+			end
+			if feignDetected then
+				if TaliaaGankTracker and TaliaaGankTracker.HandleHunterFeign then
+					TaliaaGankTracker:HandleHunterFeign(dstGUID, dstName)
+				end
+				VoidMark.GankRecentDamage[dstName] = nil
+				return
+			end
+		end
+
+		-- SPELL_INSTAKILL also carries unconsciousOnDeath in arg16.
+		if event == "SPELL_INSTAKILL" and dstName and dstGUID
+			and (arg16 == 1 or arg16 == true or arg16 == "1") then
+			if TaliaaGankTracker and TaliaaGankTracker.HandleHunterFeign then
+				TaliaaGankTracker:HandleHunterFeign(dstGUID, dstName)
+			end
+			VoidMark.GankRecentDamage[dstName] = nil
+			return
+		end
+
 		-- update win stats / Gank Tracker
 		if event == "PARTY_KILL" then
 			-- PARTY_KILL fires when YOU OR A GROUP MEMBER gets the killing blow.
-			-- The tracker should count the group gank, while lifetime W/L stays personal.
+			-- The tracker should count the group gank, while threat W/L stays personal.
 			local isPlayerVictim = dstGUID and strsub(dstGUID, 1, 6) == "Player"
 
 			local playerData = dstName and VoidMarkPerCharDB
@@ -2245,18 +2793,26 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 				or bit.band(srcFlags, COMBATLOG_OBJECT_AFFILIATION_RAID) > 0
 			)
 
-			local sourceIsPlayer = srcGUID == UnitGUID("player")
+			local sourceIsPlayer = srcGUID == VMAPI.UnitGUID("player")
 
 			if dstName and isPlayerVictim and isEnemyVictim and sourceIsGroup then
+				-- PARTY_KILL is authoritative real-death evidence. Confirm a Hunter
+				-- before RecordKill so the following UNIT_DIED cannot race into Feign.
+				if TaliaaGankTracker and TaliaaGankTracker.ConfirmHunterRealDeath then
+					TaliaaGankTracker:ConfirmHunterRealDeath(dstGUID, dstName)
+				end
 				if TaliaaGankTracker and TaliaaGankTracker.RecordKill then
-					TaliaaGankTracker:RecordKill(dstName, dstGUID)
+					TaliaaGankTracker:RecordKill(dstName, dstGUID, sourceIsPlayer)
 				end
 				VoidMark.GankRecentDamage[dstName] = nil
 
-				-- Lifetime W/L remains personal: increment the win only when
-				-- this character got the killing blow.
-				if sourceIsPlayer and playerData then
-					playerData.wins = (tonumber(playerData.wins) or 0) + 1
+				-- Personal threat WIN only when YOUR character got the KB.
+				-- Lifetime wins are owned by GankRepository/RecordKill; do not
+				-- increment PlayerData.wins here or the same death is counted twice.
+				if sourceIsPlayer then
+					if VoidMark.ThreatCombat[dstName] then
+						VoidMark:FinishThreatFight(dstName, "WIN")
+					end
 				end
 			end
 		end
@@ -2280,8 +2836,12 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 				if VoidMark.PetGUID[srcGUID] then
 					local playerData = VoidMarkPerCharDB.PlayerData[dstName]
 					if playerData then
-						playerData.wins = (tonumber(playerData.wins) or 0) + 1
---							PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\neck-snap.mp3", VoidMark.db.profile.SoundChannel)
+						-- RecordKill/GankRepository owns lifetime win accounting.
+						-- Pet/guardian killing blows may still finish the personal
+						-- threat fight, but must not increment PlayerData.wins.
+						if VoidMark.ThreatCombat[dstName] then
+							VoidMark:FinishThreatFight(dstName, "WIN")
+						end
 --							DEFAULT_CHAT_FRAME:AddMessage("Your pet/guardian killed " .. dstName);
 					end
 				end
@@ -2291,7 +2851,7 @@ timestamp, event, hideCaster, srcGUID, srcName, srcFlags, sourceRaidFlags, dstGU
 			local petGUID = dstGUID
 			VoidMark.PetGUID[petGUID] = time()
 		end
-		if event == "ENVIRONMENTAL_DAMAGE" and dstGUID == UnitGUID("player") then
+		if event == "ENVIRONMENTAL_DAMAGE" and dstGUID == VMAPI.UnitGUID("player") then
 --			local environmentalType = arg12
 --			local amount = arg13
 			VoidMark.LastAttack = nil		
@@ -2302,6 +2862,8 @@ end
 
 function VoidMark:LeftCombatEvent()
 	VoidMark.LastAttack = nil
+	-- Do not close Taliaa threat fights here.
+	-- Classic Era players can briefly leave combat and immediately re-engage.
 	VoidMark:RefreshCurrentList()
 	if VoidMark.ClearCombatSightings then
 		VoidMark:ClearCombatSightings()
@@ -2309,18 +2871,26 @@ function VoidMark:LeftCombatEvent()
 end
 
 function VoidMark:PlayerDeadEvent()
-	-- Assign the lifetime loss to the hostile player who damaged us most
-	-- recently inside the short death-credit window.
+	if VoidMark:ShouldIgnoreBattlegroundStats() then
+		-- Drop any active fight state without writing BG losses/fight records.
+		VoidMark.ThreatCombat = {}
+		return
+	end
+	-- Taliaa VoidMark: use the most recent hostile-player damage within 10 seconds
+	-- as the loss owner. The old VoidMark path required the final hostile event to land
+	-- within 0.5s of PLAYER_DEAD, which missed many normal PvP deaths and left the
+	-- compact lifetime record's loss side artificially low.
 	local now = GetTime()
 	local killer = nil
 	local newestHit = 0
 
-	for player, hitTime in pairs(VoidMark.RecentEnemyDamage or {}) do
-		local stamp = tonumber(hitTime) or 0
-		local age = now - stamp
-		if age <= VOIDMARK_DEATH_CREDIT_WINDOW and stamp > newestHit then
-			newestHit = stamp
-			killer = player
+	for player, fight in pairs(VoidMark.ThreatCombat) do
+		if fight.lastTakenTime then
+			local age = now - fight.lastTakenTime
+			if age <= TALIAA_THREAT_DEATH_CREDIT_WINDOW and fight.lastTakenTime > newestHit then
+				newestHit = fight.lastTakenTime
+				killer = player
+			end
 		end
 	end
 
@@ -2329,12 +2899,19 @@ function VoidMark:PlayerDeadEvent()
 		if playerData then
 			playerData.loses = (tonumber(playerData.loses) or 0) + 1
 		end
-	end
 
-	-- A death ends the attribution window; do not let stale hits leak into the
-	-- next death.
-	for player in pairs(VoidMark.RecentEnemyDamage or {}) do
-		VoidMark.RecentEnemyDamage[player] = nil
+		VoidMark:FinishThreatFight(killer, "LOSS")
+
+		-- Any other active enemy encounters were not responsible for the death.
+		if next(VoidMark.ThreatCombat) then
+			VoidMark:FinishAllThreatFights("INTERRUPTED")
+		end
+	else
+		-- Player died, but no active enemy player qualifies for kill credit
+		-- (guards, mobs, environment, etc.). Preserve the encounter as interrupted.
+		if next(VoidMark.ThreatCombat) then
+			VoidMark:FinishAllThreatFights("INTERRUPTED")
+		end
 	end
 end
 
@@ -2343,9 +2920,9 @@ function VoidMark:UnitPets(event, unit)
 	if unit == "player" then
 		petUnit = "pet"
 	end
-	if petUnit and UnitExists(petUnit) then
-		local guid = UnitGUID(unit)
-		local petGUID = UnitGUID(petUnit)
+	if petUnit and VMAPI.UnitExists(petUnit) then
+		local guid = VMAPI.UnitGUID(unit)
+		local petGUID = VMAPI.UnitGUID(petUnit)
 		VoidMark.PetGUID[petGUID] = time()
 		local petCount = 0
 		for k, v in pairs(VoidMark.PetGUID) do

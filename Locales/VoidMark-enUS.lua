@@ -1,9 +1,11 @@
+local VMAPI = VoidMarkForever.API
 local AceLocale = LibStub:GetLibrary("AceLocale-3.0")
 local L = AceLocale:NewLocale("VoidMark", "enUS", true)
 if not L then return end
 
 -- Configuration
 L["VoidMark"] = "VoidMark"
+L["ToDebugString"] = "ToDebugString"
 L["Version"] = "Version"
 L["VoidMark Option"] = "VoidMark"
 L["Profiles"] = "Profiles"
@@ -11,7 +13,7 @@ L["Profiles"] = "Profiles"
 -- Information
 L["About"] = "About"
 L["VoidMarkDescription1"] = [[
-VoidMark alerts you to nearby enemy players and provides compact WPvP tracking, threat, KOS, and encounter tools. These are some of the main features.
+VoidMark alerts you to nearby enemy players and provides compact WPvP tracking, threat, KOS, hunt, and encounter tools. These are some of the main features.
 
 ]]
 
@@ -37,8 +39,7 @@ The Statistics Window contains a list of all enemy encounters which can be sorte
 |cffffd000 Kill On Sight Button |cffffffff
 If enabled, this button will be located on the enemy players target frame. Clicking on this button will add/remove the enemy target to/from the Kill On Sight list. Right clicking on the button will allow you to enter Kill on Sight reasons.
 
-|cffffd000 VoidMark customization:|cffffffff Taliaa
-|cffffd000 Original framework author:|cffffffff Slipjack
+|cffffd000 VoidMark framework author:|cffffffff Taliaa
 ]]
 
 -- General Settings

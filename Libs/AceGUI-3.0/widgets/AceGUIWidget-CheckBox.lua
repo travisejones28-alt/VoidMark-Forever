@@ -12,13 +12,6 @@ local select, pairs = select, pairs
 local PlaySound = PlaySound
 local CreateFrame, UIParent = CreateFrame, UIParent
 
--- VoidMark Forever: the global SetDesaturation helper is absent on this client.
-local SetDesaturation = SetDesaturation or function(texture, desaturated)
-	if texture and texture.SetDesaturated then
-		texture:SetDesaturated(desaturated and true or false)
-	end
-end
-
 --[[-----------------------------------------------------------------------------
 Support functions
 -------------------------------------------------------------------------------]]

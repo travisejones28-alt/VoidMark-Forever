@@ -1,3 +1,4 @@
+local VMAPI = VoidMarkForever.API
 local SM = LibStub:GetLibrary("LibSharedMedia-3.0")
 local Events = LibStub("AceEvent-3.0")
 local AceLocale = LibStub("AceLocale-3.0")
@@ -9,14 +10,14 @@ VoidMark.VoidMarkCombatClickBuild = "2026-08-23-v1-fast-row"
 
 --++ Local FrameFlash functions derived from Blizzard code ++--
 local VoidMarkFrameFlashManager = CreateFrame("FRAME");
-local VOIDMARKFADEFRAMES = {};
-local VOIDMARKFLASHFRAMES = {};
+local SPYFADEFRAMES = {};
+local SPYFLASHFRAMES = {};
 local VoidMarkFrameFlashTimers = {};
 local VoidMarkFrameFlashTimerRefCount = {};
 
 -- Fucntion to see if a frame is fading
 function VoidMarkFrameIsFading(frame)
-	for index, value in pairs(VOIDMARKFADEFRAMES) do
+	for index, value in pairs(SPYFADEFRAMES) do
 		if ( value == frame ) then
 			return 1;
 		end
@@ -26,7 +27,7 @@ end
 
 -- Function to stop flashing --
 local function VoidMarkFrameFlashStop(frame)
-    tDeleteItem(VOIDMARKFLASHFRAMES, frame);
+    tDeleteItem(SPYFLASHFRAMES, frame);
     frame:SetAlpha(1.0);
     frame.flashTimer = nil;
     if (frame.syncId) then
@@ -47,15 +48,15 @@ end
 -- Call every frame to update flashing frames  --
 local function VoidMarkFrameFlash_OnUpdate(self, elapsed)
     local frame;
-    local index = #VOIDMARKFLASHFRAMES;
+    local index = #SPYFLASHFRAMES;
      
     -- Update timers for all synced frames
     for syncId, timer in pairs(VoidMarkFrameFlashTimers) do
         VoidMarkFrameFlashTimers[syncId] = timer + elapsed;
     end
      
-    while VOIDMARKFLASHFRAMES[index] do
-        frame = VOIDMARKFLASHFRAMES[index];
+    while SPYFLASHFRAMES[index] do
+        frame = SPYFLASHFRAMES[index];
         frame.flashTimer = frame.flashTimer + elapsed;
         if ( (frame.flashTimer > frame.flashDuration) and frame.flashDuration ~= -1 ) then
             VoidMarkFrameFlashStop(frame);
@@ -81,7 +82,7 @@ local function VoidMarkFrameFlash_OnUpdate(self, elapsed)
         -- Loop in reverse so that removing frames is safe
         index = index - 1;
     end
-    if ( #VOIDMARKFLASHFRAMES == 0 ) then
+    if ( #SPYFLASHFRAMES == 0 ) then
         self:SetScript("OnUpdate", nil);
     end
 end
@@ -91,8 +92,8 @@ local function VoidMarkFrameFlash(frame, fadeInTime, fadeOutTime, flashDuration,
     if ( frame ) then
         local index = 1;
         -- If frame is already set to flash then return
-        while VOIDMARKFLASHFRAMES[index] do		
-            if ( VOIDMARKFLASHFRAMES[index] == frame ) then
+        while SPYFLASHFRAMES[index] do		
+            if ( SPYFLASHFRAMES[index] == frame ) then
                 return;
             end
             index = index + 1;
@@ -122,7 +123,7 @@ local function VoidMarkFrameFlash(frame, fadeInTime, fadeOutTime, flashDuration,
         -- How long to hold the faded out state
         frame.flashOutHoldTime = flashOutHoldTime;
          
-        tinsert(VOIDMARKFLASHFRAMES, frame);		
+        tinsert(SPYFLASHFRAMES, frame);		
          
        VoidMarkFrameFlashManager:SetScript("OnUpdate", VoidMarkFrameFlash_OnUpdate);
     end
@@ -164,13 +165,8 @@ function VoidMark:CreateRow(num)
 	row.VoidMarkCombatFlash:SetBlendMode("ADD")
 	row.VoidMarkCombatFlash:Hide()
 
-	-- VoidMark: secure targeting is configured OUTSIDE combat.
+	-- TaliaaVoidMark: secure targeting is configured OUTSIDE combat.
 	-- We never change secure attributes from the click handler.
-	-- Forever: fire row actions once on button release. Registering both
-	-- AnyDown and AnyUp makes PreClick run twice for a single right-click,
-	-- which can open the KOS/actions menu on mouse-down and immediately
-	-- close it again on mouse-up. Left/right Up keeps secure targeting and
-	-- right-click actions to one execution per click.
 	row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 	row:SetAttribute("type1", "macro")
 	row:SetAttribute("macro", nil)
@@ -186,7 +182,10 @@ function VoidMark:CreateRow(num)
 	-- Use PreClick, not OnClick. SecureActionButtonTemplate performs
 	-- its protected target action as part of the secure click path.
 	-- Replacing OnClick can prevent that secure action from firing.
-	row:SetScript("PreClick", function(self, button)
+	row:SetScript("PreClick", function(self, button, down)
+		-- Both phases are registered for secure targeting. Run menu/modifier
+		-- actions only on release so one click cannot toggle a setting twice.
+		if down then return end
 		VoidMark:ButtonClicked(self, button)
 	end)
 end
@@ -553,8 +552,8 @@ function VoidMark:CreateMainWindow()
 			theFrame.DragBottomRight = CreateFrame("Button", "VoidMarkResizeGripRight", theFrame)
 			theFrame.DragBottomRight:Show()
 			theFrame.DragBottomRight:SetFrameLevel(theFrame:GetFrameLevel() + 10)
-			theFrame.DragBottomRight:SetNormalTexture("Interface\\AddOns\\VoidMark\\Textures\\resize-bottomright.tga")
-			theFrame.DragBottomRight:SetHighlightTexture("Interface\\AddOns\\VoidMark\\Textures\\resize-bottomright.tga")
+			theFrame.DragBottomRight:SetNormalTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\resize-bottomright.tga")
+			theFrame.DragBottomRight:SetHighlightTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\resize-bottomright.tga")
 			theFrame.DragBottomRight:SetWidth(16)
 			theFrame.DragBottomRight:SetHeight(16)
 			theFrame.DragBottomRight:SetAlpha(0)
@@ -584,8 +583,8 @@ function VoidMark:CreateMainWindow()
 			theFrame.DragBottomLeft = CreateFrame("Button", "VoidMarkResizeGripLeft", theFrame)
 			theFrame.DragBottomLeft:Show()
 			theFrame.DragBottomLeft:SetFrameLevel(theFrame:GetFrameLevel() + 10)
-			theFrame.DragBottomLeft:SetNormalTexture("Interface\\AddOns\\VoidMark\\Textures\\resize-bottomleft.tga")
-			theFrame.DragBottomLeft:SetHighlightTexture("Interface\\AddOns\\VoidMark\\Textures\\resize-bottomleft.tga")
+			theFrame.DragBottomLeft:SetNormalTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\resize-bottomleft.tga")
+			theFrame.DragBottomLeft:SetHighlightTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\resize-bottomleft.tga")
 			theFrame.DragBottomLeft:SetWidth(16)
 			theFrame.DragBottomLeft:SetHeight(16)
 			theFrame.DragBottomLeft:SetAlpha(0)		
@@ -615,8 +614,8 @@ function VoidMark:CreateMainWindow()
 			theFrame.DragTopRight = CreateFrame("Button", "VoidMarkResizeGripRight", theFrame)
 			theFrame.DragTopRight:Show()
 			theFrame.DragTopRight:SetFrameLevel(theFrame:GetFrameLevel() + 10)
-			theFrame.DragTopRight:SetNormalTexture("Interface\\AddOns\\VoidMark\\Textures\\resize-topright.tga")
-			theFrame.DragTopRight:SetHighlightTexture("Interface\\AddOns\\VoidMark\\Textures\\resize-topright.tga")
+			theFrame.DragTopRight:SetNormalTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\resize-topright.tga")
+			theFrame.DragTopRight:SetHighlightTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\resize-topright.tga")
 			theFrame.DragTopRight:SetWidth(16)
 			theFrame.DragTopRight:SetHeight(16)
 			theFrame.DragTopRight:SetAlpha(0)
@@ -646,8 +645,8 @@ function VoidMark:CreateMainWindow()
 			theFrame.DragTopLeft = CreateFrame("Button", "VoidMarkResizeGripLeft", theFrame)
 			theFrame.DragTopLeft:Show()
 			theFrame.DragTopLeft:SetFrameLevel(theFrame:GetFrameLevel() + 10)
-			theFrame.DragTopLeft:SetNormalTexture("Interface\\AddOns\\VoidMark\\Textures\\resize-topleft.tga")
-			theFrame.DragTopLeft:SetHighlightTexture("Interface\\AddOns\\VoidMark\\Textures\\resize-topleft.tga")
+			theFrame.DragTopLeft:SetNormalTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\resize-topleft.tga")
+			theFrame.DragTopLeft:SetHighlightTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\resize-topleft.tga")
 			theFrame.DragTopLeft:SetWidth(16)
 			theFrame.DragTopLeft:SetHeight(16)
 			theFrame.DragTopLeft:SetAlpha(0)		
@@ -676,9 +675,9 @@ function VoidMark:CreateMainWindow()
 		end
 
 		theFrame.RightButton = CreateFrame("Button", nil, theFrame)
-		theFrame.RightButton:SetNormalTexture("Interface\\AddOns\\VoidMark\\Textures\\button-right.tga")
-		theFrame.RightButton:SetPushedTexture("Interface\\AddOns\\VoidMark\\Textures\\button-right.tga")
-		theFrame.RightButton:SetHighlightTexture("Interface\\AddOns\\VoidMark\\Textures\\button-highlight.tga")
+		theFrame.RightButton:SetNormalTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-right.tga")
+		theFrame.RightButton:SetPushedTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-right.tga")
+		theFrame.RightButton:SetHighlightTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-highlight.tga")
 		theFrame.RightButton:SetWidth(16)
 		theFrame.RightButton:SetHeight(16)
 		if not VoidMark.db.profile.InvertVoidMark then 		
@@ -701,9 +700,9 @@ function VoidMark:CreateMainWindow()
 		theFrame.RightButton:SetFrameLevel(theFrame.RightButton:GetFrameLevel() + 1)
 
 		theFrame.LeftButton = CreateFrame("Button", nil, theFrame)
-		theFrame.LeftButton:SetNormalTexture("Interface\\AddOns\\VoidMark\\Textures\\button-left.tga")
-		theFrame.LeftButton:SetPushedTexture("Interface\\AddOns\\VoidMark\\Textures\\button-left.tga")
-		theFrame.LeftButton:SetHighlightTexture("Interface\\AddOns\\VoidMark\\Textures\\button-highlight.tga")
+		theFrame.LeftButton:SetNormalTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-left.tga")
+		theFrame.LeftButton:SetPushedTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-left.tga")
+		theFrame.LeftButton:SetHighlightTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-highlight.tga")
 		theFrame.LeftButton:SetWidth(16)
 		theFrame.LeftButton:SetHeight(16)
 		theFrame.LeftButton:SetPoint("RIGHT", theFrame.RightButton, "LEFT", 0, 0)
@@ -722,9 +721,9 @@ function VoidMark:CreateMainWindow()
 		theFrame.LeftButton:SetFrameLevel(theFrame.LeftButton:GetFrameLevel() + 1)
 
 		theFrame.ClearButton = CreateFrame("Button", nil, theFrame)
-		theFrame.ClearButton:SetNormalTexture("Interface\\AddOns\\VoidMark\\Textures\\button-clear.tga")
-		theFrame.ClearButton:SetPushedTexture("Interface\\AddOns\\VoidMark\\Textures\\button-clear.tga")
-		theFrame.ClearButton:SetHighlightTexture("Interface\\AddOns\\VoidMark\\Textures\\button-highlight.tga")
+		theFrame.ClearButton:SetNormalTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-clear.tga")
+		theFrame.ClearButton:SetPushedTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-clear.tga")
+		theFrame.ClearButton:SetHighlightTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-highlight.tga")
 		theFrame.ClearButton:SetWidth(16)
 		theFrame.ClearButton:SetHeight(16)
 		theFrame.ClearButton:SetPoint("RIGHT", theFrame.LeftButton,"LEFT", 0, 0)
@@ -743,9 +742,9 @@ function VoidMark:CreateMainWindow()
 		theFrame.ClearButton:SetFrameLevel(theFrame.ClearButton:GetFrameLevel() + 1)
 		
 		theFrame.StatsButton = CreateFrame("Button", nil, theFrame)
-		theFrame.StatsButton:SetNormalTexture("Interface\\AddOns\\VoidMark\\Textures\\button-file.tga")
-		theFrame.StatsButton:SetPushedTexture("Interface\\AddOns\\VoidMark\\Textures\\button-file.tga")
-		theFrame.StatsButton:SetHighlightTexture("Interface\\AddOns\\VoidMark\\Textures\\button-highlight.tga")
+		theFrame.StatsButton:SetNormalTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-file.tga")
+		theFrame.StatsButton:SetPushedTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-file.tga")
+		theFrame.StatsButton:SetHighlightTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-highlight.tga")
 		theFrame.StatsButton:SetWidth(12)
 		theFrame.StatsButton:SetHeight(12)
 		theFrame.StatsButton:SetPoint("RIGHT", theFrame.ClearButton,"LEFT", -4, 0)
@@ -777,9 +776,9 @@ function VoidMark:CreateMainWindow()
 		theFrame.CountFrame.Text:SetScale(1)
 	
 		theFrame.CountButton = CreateFrame("Button", nil, theFrame)
-		theFrame.CountButton:SetNormalTexture("Interface\\AddOns\\VoidMark\\Textures\\button-crosshairs.tga")
-		theFrame.CountButton:SetPushedTexture("Interface\\AddOns\\VoidMark\\Textures\\button-crosshairs.tga")
-		theFrame.CountButton:SetHighlightTexture("Interface\\AddOns\\VoidMark\\Textures\\button-highlight.tga")
+		theFrame.CountButton:SetNormalTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-crosshairs.tga")
+		theFrame.CountButton:SetPushedTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-crosshairs.tga")
+		theFrame.CountButton:SetHighlightTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-highlight.tga")
 		theFrame.CountButton:SetWidth(12)
 		theFrame.CountButton:SetHeight(12)
 		theFrame.CountButton:SetAlpha(.0)		
@@ -810,8 +809,8 @@ function VoidMark:CreateMainWindow()
 
 	end
 
-	if VoidMark.EnsureCombatSightingsFrame then
-		VoidMark:EnsureCombatSightingsFrame()
+	if VoidMark.EnsureCombatQueueBar then
+		VoidMark:EnsureCombatQueueBar()
 	end
 
 	if not VoidMark.AlertWindow then
@@ -822,8 +821,6 @@ function VoidMark:CreateMainWindow()
 		VoidMark:UpdateAlertWindow()
 		VoidMark.AlertWindow:SetHeight(42)
 		VoidMark.AlertWindow:SetBackdrop({
---			bgFile = "Interface\\AddOns\\VoidMark\\Textures\\alert-background.tga", tile = true, tileSize = 8,
---			edgeFile = "Interface\\AddOns\\VoidMark\\Textures\\alert-industrial.tga", edgeSize = 8,
 --			insets = { left = 8, right = 8, top = 8, bottom = 8 },
 			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", tile = true, tileSize = 8,edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 8,
 			insets = { left = 2, right = 2, top = 2, bottom = 2 },
@@ -875,14 +872,16 @@ function VoidMark:SetBar(num, name, desc, value, colorgroup, colorclass, tooltip
 	local Row = VoidMark.MainWindow.Rows[num]
 	Row.StatusBar:SetValue(value)
 
-	-- TALIAA VOIDMARK PRIORITY MARKER
-	-- KOS remains the only record-derived priority marker in the row.
-	-- Forever uses a main + secondary name internally, but displays the
-	-- complete player-facing name.
-	local bareName = (VoidMarkForever and VoidMarkForever.DisplayName and VoidMarkForever.DisplayName(name))
-		or (tostring(name):match("^([^%-]+)") or tostring(name))
+	-- TALIAA SPY PRIORITY MARKERS
+	-- KOS takes priority: skull.
+	-- HIGH threat (but not KOS): star.
+	-- Row.Name remains the real player name so secure click-targeting is unaffected.
+	-- VoidMark compact rows never show the realm suffix. Keep the full
+	-- Name-Realm value in Row.Name/secure attributes for targeting and data.
+	local bareName = VoidMarkForever.DisplayName(name)
 	local displayName = bareName
 	local isKOS = false
+	local isHighThreat = false
 
 	if VoidMarkPerCharDB and VoidMarkPerCharDB.KOSData and VoidMarkPerCharDB.KOSData[name] then
 		isKOS = true
@@ -896,16 +895,44 @@ function VoidMark:SetBar(num, name, desc, value, colorgroup, colorclass, tooltip
 		isKOS = true
 	end
 
+	if VoidMark.CalculateThreatScore then
+		local _, markerThreatLevel = VoidMark:CalculateThreatScore(name)
+		if markerThreatLevel == "HIGH" then
+			isHighThreat = true
+		end
+	end
+
 	if isKOS then
 		displayName = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:16:16:0:0|t " .. bareName
+	elseif isHighThreat then
+		displayName = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_1:16:16:0:0|t " .. bareName
 	end
 
 	Row.LeftText:SetText(displayName)
 
+	-- TALIAA SPY THREAT DISPLAY
+	-- UNKNOWN threat is intentionally blank in the compact VoidMark row.
+	local threatDisplay = ""
+	if VoidMark.CalculateThreatScore then
+		local score, level = VoidMark:CalculateThreatScore(name)
+		if level == "HIGH" then
+			threatDisplay = "|cffff3333[HIGH]|r"
+		elseif level == "LOW" then
+			threatDisplay = "|cff33ff33[LOW]|r"
+		elseif level == "EVEN" then
+			threatDisplay = "|cffffff00[EVEN]|r"
+		end
+	end
+
 	if desc and desc ~= "" then
-		Row.RightText:SetText(desc)
+		if threatDisplay ~= "" then
+			-- VoidMark order: Name | Level Class | Threat
+			Row.RightText:SetText(desc .. " " .. threatDisplay)
+		else
+			Row.RightText:SetText(desc)
+		end
 	else
-		Row.RightText:SetText("")
+		Row.RightText:SetText(threatDisplay)
 	end
 
 	Row.Name = name
@@ -914,12 +941,9 @@ function VoidMark:SetBar(num, name, desc, value, colorgroup, colorclass, tooltip
 	-- Pre-load the target macro while secure attributes are writable.
 	-- During combat, leave the last secure value untouched.
 	if not InCombatLockdown() then
-		local targetName = (VoidMarkForever and VoidMarkForever.TargetName and VoidMarkForever.TargetName(name)) or name
-		local macroText = "/targetexact " .. tostring(targetName)
-		Row:SetAttribute("type1", "macro")
 		Row:SetAttribute("macro", nil)
-		Row:SetAttribute("macrotext1", macroText)
-		Row:SetAttribute("macrotext", macroText)
+		Row:SetAttribute("macrotext1", "/targetexact " .. VoidMarkForever.TargetName(name))
+		Row:SetAttribute("macrotext", "/targetexact " .. VoidMarkForever.TargetName(name))
 	end
 
 	Row.LeftText:SetWidth(Row:GetWidth() - Row.RightText:GetStringWidth() - 4)
@@ -1076,13 +1100,10 @@ function VoidMark:EnsureCombatSightingsFrame()
 end
 
 local function VoidMarkSamePlayer(a, b)
+    if VoidMarkForever.IsForever then return a ~= nil and b ~= nil and a == b end
     if not a or not b then return false end
-    if VoidMarkForever and VoidMarkForever.IsForever then
-        -- Secondary names are identity on Forever. First-name fallback would
-        -- merge different players who share the same main name.
-        return tostring(a) == tostring(b)
-    end
     if a == b then return true end
+    -- Fallback for old rows that may have been assigned without a realm suffix.
     local aa = tostring(a):match("^([^%-]+)") or tostring(a)
     local bb = tostring(b):match("^([^%-]+)") or tostring(b)
     return aa == bb
@@ -1139,8 +1160,7 @@ local function VoidMarkCombatNotice(player, playerData, isKOS)
     if (now - last) < 2.5 then return end
     VoidMark._VoidMarkCombatNoticeAt[player] = now
 
-    local bare = (VoidMarkForever and VoidMarkForever.DisplayName and VoidMarkForever.DisplayName(player))
-        or (tostring(player):match("^([^%-]+)") or tostring(player))
+    local bare = VoidMarkForever.DisplayName(player)
     local detail = ""
     if playerData and playerData.level then
         detail = detail .. " L" .. tostring(playerData.level)
@@ -1181,20 +1201,17 @@ function VoidMark:QueueCombatSighting(player, source)
         return
     end
 
-    -- Brand-new combat-only detection: no protected target can legally be bound
-    -- now. Keep the center-screen flag, but also queue it in a slim bar attached
-    -- to VoidMark so it "hits the bar" immediately and then promotes to a normal
-    -- clickable row after combat ends.
+    -- New combat detections are visual rows until secure targeting can be
+    -- assigned after combat ends.
     VoidMark:UpdateCombatQueueBar()
-    VoidMarkCombatNotice(player, playerData, isKOS)
 end
 
 function VoidMark:ClearCombatSightings()
     VoidMark.CombatSightings = {}
     VoidMark._VoidMarkCombatNoticeAt = {}
 
-    if VoidMark.MainWindow and VoidMark.MainWindow.CombatQueueBar then
-        VoidMark.MainWindow.CombatQueueBar:Hide()
+    if VoidMark.CombatNearbyRows then
+        VoidMark.CombatNearbyRows:Hide()
     end
 
     -- Compatibility cleanup if a frame from an older build happened to exist.
@@ -1215,105 +1232,157 @@ function VoidMark:ClearCombatSightings()
     end
 end
 
+-- Independent, NONSECURE combat list. No protected targeting attributes are changed.
+-- This lets players see and drag combat sightings without combat lockdown errors.
+-- Visual-only combat rows placed inside the existing Nearby list.
+-- Keep these unprotected: secure target macros must never be rebound in combat.
 function VoidMark:EnsureCombatQueueBar()
     if not VoidMark.MainWindow then return nil end
-    local f = VoidMark.MainWindow.CombatQueueBar
-    if not f then
-        f = CreateFrame("Frame", nil, VoidMark.MainWindow, "BackdropTemplate")
-        VoidMark.MainWindow.CombatQueueBar = f
-        f:SetPoint("TOPLEFT", VoidMark.MainWindow, "TOPLEFT", 2, -54)
-        f:SetPoint("TOPRIGHT", VoidMark.MainWindow, "TOPRIGHT", -2, -54)
-        f:SetHeight(math.max(18, VoidMark.db.profile.MainWindow.RowHeight or 18))
-        f:SetFrameLevel(VoidMark.MainWindow:GetFrameLevel() + 70)
-        f:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background" })
-        f:SetBackdropColor(0.10, 0.02, 0.16, 0.94)
-        f.Icon = f:CreateTexture(nil, "ARTWORK")
-        f.Icon:SetSize(14, 14)
-        f.Icon:SetPoint("LEFT", f, "LEFT", 4, 0)
-        f.Icon:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcon_8")
-        f.Text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        f.Text:SetPoint("LEFT", f.Icon, "RIGHT", 4, 0)
-        f.Text:SetPoint("RIGHT", f, "RIGHT", -4, 0)
-        f.Text:SetJustifyH("LEFT")
-        f.Text:SetTextColor(0.86, 0.66, 1.0, 1)
-        f:EnableMouse(false)
-        f:Hide()
+    if self.CombatNearbyRows then return self.CombatNearbyRows end
+    -- The overlay is deliberately nonsecure and blocks mouse clicks on its
+    -- visual-only rows; secure target bindings never change during combat.
+    local overlay = CreateFrame("Frame", nil, UIParent)
+    self.CombatNearbyRows = overlay
+    overlay:SetPoint("TOPLEFT", VoidMark.MainWindow, "TOPLEFT", 2, -90)
+    overlay:SetPoint("TOPRIGHT", VoidMark.MainWindow, "TOPRIGHT", -2, -90)
+    overlay:SetHeight(1)
+    overlay:SetFrameStrata("LOW")
+    overlay:SetFrameLevel(VoidMark.MainWindow:GetFrameLevel() + 10)
+    overlay:EnableMouse(false)
+    overlay.Rows = {}
+    for i = 1, 12 do
+        local bar = CreateFrame("Frame", nil, overlay, "BackdropTemplate")
+        bar:SetPoint("TOPLEFT", overlay, "TOPLEFT", 0, -(i - 1) * 18)
+        bar:SetPoint("TOPRIGHT", overlay, "TOPRIGHT", 0, -(i - 1) * 18)
+        bar:SetHeight(18)
+        bar:SetBackdrop({bgFile = "Interface\\Buttons\\WHITE8X8"})
+        bar:SetBackdropColor(0.20, 0.045, 0.31, 0.98)
+        bar:EnableMouse(true) -- do not let click-through target a different enemy
+        bar.Name = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        bar.Name:SetPoint("LEFT", bar, "LEFT", 4, 0)
+        bar.Name:SetPoint("RIGHT", bar, "RIGHT", -115, 0)
+        bar.Name:SetJustifyH("LEFT")
+        bar.Name:SetWordWrap(false)
+        bar.Level = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        bar.Level:SetPoint("RIGHT", bar, "RIGHT", -78, 0)
+        bar.Level:SetWidth(25)
+        bar.Level:SetJustifyH("RIGHT")
+        bar.Class = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        bar.Class:SetPoint("RIGHT", bar, "RIGHT", -55, 0)
+        bar.Class:SetWidth(20)
+        bar.Class:SetJustifyH("CENTER")
+        bar.Record = bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        bar.Record:SetPoint("RIGHT", bar, "RIGHT", -3, 0)
+        bar.Record:SetWidth(48)
+        bar.Record:SetJustifyH("RIGHT")
+        bar.Record:SetTextColor(0.73, 0.64, 0.79, 1)
+        bar:Hide()
+        overlay.Rows[i] = bar
     end
-    return f
+    -- Match the existing Nearby font rather than using the smaller default font.
+    overlay:Hide()
+    return overlay
+end
+
+local function CombatClassIcon(class)
+    local coords = class and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[class]
+    if not coords then return "" end
+    local a = {}
+    for i = 1, 4 do a[i] = math.floor((coords[i] or 0) * 256 + 0.5) end
+    return string.format("|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:16:16:0:0:256:256:%d:%d:%d:%d|t", a[1], a[2], a[3], a[4])
 end
 
 function VoidMark:UpdateCombatQueueBar()
-    local f = VoidMark:EnsureCombatQueueBar()
-    if not f then return end
-
-    local sightings = VoidMark.CombatSightings or {}
-    local newest = nil
-    local count = 0
-    for _, data in pairs(sightings) do
-        count = count + 1
-        if not newest or (data.seenAt or 0) > (newest.seenAt or 0) then
-            newest = data
-        end
-    end
-
-    if not newest then
-        f:Hide()
+    local overlay = self:EnsureCombatQueueBar()
+    if not overlay then return end
+    if not InCombatLockdown() or not self.MainWindow:IsShown()
+        or self.db.profile.CurrentList ~= 1 then
+        overlay:Hide()
         return
     end
-
-    local player = tostring(newest.player or "")
-    local bare = (VoidMarkForever and VoidMarkForever.DisplayName and VoidMarkForever.DisplayName(player))
-        or (player:match("^([^%-]+)") or player)
-    local detail = ""
-    if newest.level then detail = detail .. " L" .. tostring(newest.level) end
-    if newest.class then detail = detail .. " " .. tostring(newest.class) end
-    local more = ""
-    if count > 1 then more = "  +" .. tostring(count - 1) end
-
-    if newest.kos then
-        f:SetBackdropColor(0.23, 0.02, 0.05, 0.95)
-        f.Text:SetTextColor(1.0, 0.36, 0.40, 1)
-        f.Text:SetText("KOS QUEUED • " .. bare .. detail .. more)
-    else
-        f:SetBackdropColor(0.10, 0.02, 0.16, 0.94)
-        f.Text:SetTextColor(0.86, 0.66, 1.0, 1)
-        f.Text:SetText("QUEUED • " .. bare .. detail .. more)
+    local now = time()
+    local entries = {}
+    for player, data in pairs(self.CombatSightings or {}) do
+        if now - (data.seenAt or now) <= 30 then
+            local frozen = VoidMarkFindFrozenRow(player)
+            if not (frozen and frozen:IsShown()) then
+                entries[#entries + 1] = data
+            end
+        else
+            self.CombatSightings[player] = nil
+        end
     end
-    f:Show()
+    table.sort(entries, function(a, b) return (a.seenAt or 0) > (b.seenAt or 0) end)
+    -- Place combat sightings immediately AFTER the visible secure rows, not
+    -- over their lower edge. The main protected frame is never resized here.
+    local main = VoidMark.MainWindow
+    local step = (VoidMark.db.profile.MainWindow.RowHeight or 18) + (VoidMark.db.profile.MainWindow.RowSpacing or 0)
+    local top = (VoidMark.VoidMark and VoidMark.VoidMark.ROW_TOP_OFFSET) or 90
+    local secureCount = 0
+    for i, row in ipairs(main.Rows or {}) do
+        if row:IsShown() then secureCount = math.max(secureCount, i) end
+    end
+    overlay:ClearAllPoints()
+    overlay:SetPoint("TOPLEFT", main, "TOPLEFT", 2, -top - secureCount * step)
+    overlay:SetPoint("TOPRIGHT", main, "TOPRIGHT", -2, -top - secureCount * step)
+    for i, bar in ipairs(overlay.Rows) do
+        bar:ClearAllPoints()
+        bar:SetPoint("TOPLEFT", overlay, "TOPLEFT", 0, -(i - 1) * step)
+        bar:SetPoint("TOPRIGHT", overlay, "TOPRIGHT", 0, -(i - 1) * step)
+        bar:SetHeight(VoidMark.db.profile.MainWindow.RowHeight or 18)
+        local standard = main.Rows and main.Rows[1]
+        if standard and standard.LeftText and standard.RightText then
+            local font, size, flags = standard.LeftText:GetFont()
+            if font and size then bar.Name:SetFont(font, size, flags or "") end
+            font, size, flags = standard.RightText:GetFont()
+            if font and size then
+                bar.Level:SetFont(font, size, flags or "")
+                bar.Class:SetFont(font, size, flags or "")
+                bar.Record:SetFont(font, size, flags or "")
+            end
+        end
+    end
+    for i, bar in ipairs(overlay.Rows) do
+        local data = entries[i]
+        if data then
+            local player = data.player
+            local pd = VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData and VoidMarkPerCharDB.PlayerData[player]
+            local class = (pd and pd.class) or data.class
+            local level = (pd and pd.level) or data.level
+            local stealth = self.StealthDetectedUntil and (self.StealthDetectedUntil[player] or 0) > now
+            local name = VoidMarkForever.DisplayName(player)
+            local marker = stealth and "|TInterface\\Icons\\Ability_Stealth:13:13:0:0|t " or ""
+            if data.kos then marker = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:13:13:0:0|t " end
+            bar.Name:SetText(marker .. name)
+            local cc = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
+            bar.Name:SetTextColor(cc and cc.r or 0.92, cc and cc.g or 0.75, cc and cc.b or 1, 1)
+            bar.Level:SetText(level and tostring(level) or "??")
+            bar.Class:SetText(CombatClassIcon(class))
+            local kills, deaths = tonumber(pd and pd.wins) or 0, tonumber(pd and pd.loses) or 0
+            if TaliaaGankRepository and TaliaaGankRepository.GetHistoricalStats then
+                local k, d = TaliaaGankRepository:GetHistoricalStats(player, pd and pd.guid)
+                kills, deaths = math.max(kills, tonumber(k) or 0), math.max(deaths, tonumber(d) or 0)
+            end
+            bar.Record:SetText(string.format("%d-%d", kills, deaths))
+            bar:SetBackdropColor(data.kos and 0.32 or 0.20, 0.035, data.kos and 0.07 or 0.31, 0.98)
+            bar:Show()
+        else
+            bar:Hide()
+        end
+    end
+    if #entries == 0 then overlay:Hide() return end
+    overlay:Show()
+    if not self._CombatNearbyExpiryPending then
+        self._CombatNearbyExpiryPending = true
+        C_Timer.After(1, function()
+            VoidMark._CombatNearbyExpiryPending = false
+            if VoidMark.CombatSightings and next(VoidMark.CombatSightings) then VoidMark:UpdateCombatQueueBar() end
+        end)
+    end
 end
 
-function VoidMark:ShowCombatStealthNotice(player, kind)
-    if not VoidMark.MainWindow then return end
-    local f = VoidMark.MainWindow.CombatStealthNotice
-    if not f then
-        f = CreateFrame("Frame", nil, VoidMark.MainWindow, "BackdropTemplate")
-        VoidMark.MainWindow.CombatStealthNotice = f
-        f:SetPoint("TOPLEFT", VoidMark.MainWindow, "TOPLEFT", 2, -34)
-        f:SetPoint("TOPRIGHT", VoidMark.MainWindow, "TOPRIGHT", -2, -34)
-        f:SetHeight(math.max(18, VoidMark.db.profile.MainWindow.RowHeight or 18))
-        f:SetFrameLevel(VoidMark.MainWindow:GetFrameLevel() + 80)
-        f:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background" })
-        f:SetBackdropColor(0.18, 0.03, 0.28, 0.96)
-        f.Icon = f:CreateTexture(nil, "ARTWORK")
-        f.Icon:SetSize(16, 16)
-        f.Icon:SetPoint("LEFT", f, "LEFT", 3, 0)
-        f.Icon:SetTexture("Interface\\Icons\\Ability_Stealth")
-        f.Text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        f.Text:SetPoint("LEFT", f.Icon, "RIGHT", 4, 0)
-        f.Text:SetPoint("RIGHT", f, "RIGHT", -4, 0)
-        f.Text:SetJustifyH("LEFT")
-        f.Text:SetTextColor(0.78, 0.42, 1.0, 1)
-        f:EnableMouse(false)
-        f:Hide()
-    end
-
-    VoidMark._combatStealthNoticeToken = (VoidMark._combatStealthNoticeToken or 0) + 1
-    local token = VoidMark._combatStealthNoticeToken
-    f.Text:SetText(string.format("%s DETECTED: %s", string.upper(kind or "STEALTH"), tostring(player)))
-    f:Show()
-    C_Timer.After(8, function()
-        if VoidMark._combatStealthNoticeToken == token and f then f:Hide() end
-    end)
+function VoidMark:ShowCombatStealthNotice(player,kind)
+    self:UpdateCombatQueueBar()
 end
 
 function VoidMark:SaveAlertWindowPosition()
@@ -1363,7 +1432,7 @@ function VoidMark:ShowTooltip(self, show, id)
 		if name and name ~= "" then
 			local titleText = VoidMark.db.profile.Colors.Tooltip["Title Text"]
 
-			-- TALIAA VOIDMARK TOOLTIP POSITION
+			-- TALIAA SPY TOOLTIP POSITION
 			-- Use ONE anchor only. The old code was leaving both a TOP and
 			-- BOTTOM anchor on GameTooltip, which stretched the black tooltip
 			-- frame vertically down the screen.
@@ -1388,23 +1457,101 @@ function VoidMark:ShowTooltip(self, show, id)
 					GameTooltip:AddLine(details..L["Player"], detailsText.r, detailsText.g, detailsText.b)
 				end
 
-				-- Lifetime VoidMark W/L history. Legacy threat/confidence/fight
-				-- telemetry is intentionally not exposed in the player tooltip.
-				local lifetimeWins = tonumber(playerData.wins) or 0
-				local lifetimeLosses = tonumber(playerData.loses) or 0
-				if TaliaaGankRepository and TaliaaGankRepository.GetHistoricalStats then
-					local repoWins, repoLosses = TaliaaGankRepository:GetHistoricalStats(name, playerData.guid)
-					lifetimeWins = math.max(lifetimeWins, tonumber(repoWins) or 0)
-					lifetimeLosses = math.max(lifetimeLosses, tonumber(repoLosses) or 0)
-				end
-				if lifetimeWins > 0 or lifetimeLosses > 0 then
+				-- TALIAA SPY THREAT INTELLIGENCE
+				if VoidMark.CalculateThreatScore then
+					local score, level = VoidMark:CalculateThreatScore(name)
+					local threat = playerData.threatData
+					local wins = 0
+					local losses = 0
+					local completed = 0
+					local winRate = 0
+					local avgFight = 0
+					local avgLoss = 0
+					local damageDone = 0
+					local damageTaken = 0
+					local disengaged = 0
+					local interrupted = 0
+					local lastResult = nil
+
+					if threat then
+						wins = threat.wins or 0
+						losses = threat.losses or 0
+						completed = wins + losses
+						if completed > 0 then
+							winRate = (wins / completed) * 100
+						end
+						if (threat.fights or 0) > 0 then
+							avgFight = (threat.totalCombatTime or 0) / threat.fights
+						end
+						if losses > 0 then
+							avgLoss = (threat.totalLossTime or 0) / losses
+						end
+						damageDone = threat.damageDone or 0
+						damageTaken = threat.damageTaken or 0
+						disengaged = threat.disengaged or 0
+						interrupted = threat.interrupted or 0
+						lastResult = threat.lastResult
+					end
+
+					local r, g, b = 0.67, 0.67, 0.67
+					if level == "HIGH" then
+						r, g, b = 1, 0, 0
+					elseif level == "HIGH" then
+						r, g, b = 1, 0.5, 0
+					elseif level == "EVEN" then
+						r, g, b = 1, 1, 0
+					elseif level == "LOW" then
+						r, g, b = 0, 1, 0
+					elseif level == "LOW" then
+						r, g, b = 0.4, 1, 0.4
+					end
+
+					GameTooltip:AddLine(" ")
 					GameTooltip:AddDoubleLine(
-						"Lifetime Record",
-						lifetimeWins .. " kills - " .. lifetimeLosses .. " deaths",
+						"Threat",
+						level,
 						1, 1, 1,
-						0.78, 0.58, 1.0
+						r, g, b
 					)
+					if completed > 0 then
+						GameTooltip:AddDoubleLine(
+							"Threat Record",
+							wins .. "W - " .. losses .. "L (" .. math.floor(winRate + 0.5) .. "% wins)",
+							1, 1, 1,
+							0.85, 0.85, 0.85
+						)
+					end
+
+					-- Old VoidMark W/L is lifetime history and is separate from the
+					-- newer fight-based threat record above.
+					local lifetimeWins = tonumber(playerData.wins) or 0
+					local lifetimeLosses = tonumber(playerData.loses) or 0
+					if TaliaaGankRepository and TaliaaGankRepository.GetHistoricalStats then
+						local repoWins, repoLosses = TaliaaGankRepository:GetHistoricalStats(name, playerData.guid)
+						lifetimeWins = math.max(lifetimeWins, tonumber(repoWins) or 0)
+						lifetimeLosses = math.max(lifetimeLosses, tonumber(repoLosses) or 0)
+					end
+					if lifetimeWins > 0 or lifetimeLosses > 0 then
+						GameTooltip:AddDoubleLine(
+							"Lifetime Record",
+							lifetimeWins .. " kills - " .. lifetimeLosses .. " deaths",
+							1, 1, 1,
+							0.78, 0.58, 1.0
+						)
+					end
+
+					-- Keep the hover tooltip compact. Detailed fight duration, damage,
+					-- disengage/interruption stats are intentionally omitted here.
+					if threat and completed > 0 and lastResult then
+						GameTooltip:AddDoubleLine(
+							"Last Result",
+							tostring(lastResult),
+							1, 1, 1,
+							0.85, 0.85, 0.85
+						)
+					end
 				end
+
 
 				if VoidMarkPerCharDB.KOSData[name] then
 					local reasonText = VoidMark.db.profile.Colors.Tooltip["Reason Text"]
@@ -1585,12 +1732,7 @@ function VoidMark:CreateKoSButton()
 		VoidMark.KoSButton:Hide()
 		VoidMark.KoSButton:SetWidth(22) 
 		VoidMark.KoSButton:SetHeight(22)
-		local portrait = TargetFrame.TargetFrameContainer and TargetFrame.TargetFrameContainer.Portrait
-		if portrait then
-			VoidMark.KoSButton:SetPoint("TOPLEFT", portrait, "BOTTOMLEFT", 15, 20)
-		else
-			VoidMark.KoSButton:SetPoint("TOPLEFT", TargetFrame, "BOTTOMLEFT", 141, 44)
-		end
+		VoidMark.KoSButton:SetPoint("TOPLEFT", TargetFrame, "BOTTOMLEFT", 141, 44)
 		VoidMark.KoSButton:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
 		VoidMark.KoSButton.Background = VoidMark.KoSButton:CreateTexture("KoSButtonBackground", "BACKGROUND")
 		VoidMark.KoSButton.Background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
@@ -1610,7 +1752,7 @@ function VoidMark:CreateKoSButton()
 		RaiseFrameLevel(VoidMark.KoSButton)
 
 		VoidMark.KoSButton:SetScript("OnMouseDown", function(self, button)
-			if (UnitIsEnemy("player","target") and UnitIsPlayer("target")) then
+			if (VMAPI.UnitIsEnemy("player","target") and VMAPI.UnitIsPlayer("target")) then
 				local name = GetUnitName("target", true)
 				if button == "LeftButton" then
 					if VoidMarkPerCharDB.KOSData[name] then
@@ -1628,13 +1770,13 @@ end
 
 --hooksecurefunc("TargetFrame_Update", function()
 hooksecurefunc(TargetFrame, "Update", function()
-	if VoidMark.db and VoidMark.db.profile and VoidMark.db.profile.ShowKoSButton and VoidMark.KoSButton then
-		if (UnitIsEnemy("player","target") and UnitIsPlayer("target")) then
+	if VoidMark.db.profile.ShowKoSButton then
+		if (VMAPI.UnitIsEnemy("player","target") and VMAPI.UnitIsPlayer("target")) then
 			local name = GetUnitName("target", true)	
 			if VoidMarkPerCharDB.KOSData[name] then
-				VoidMark.KoSButton.Icon:SetTexture("Interface\\AddOns\\VoidMark\\Textures\\button-on.tga")
+				VoidMark.KoSButton.Icon:SetTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-on.tga")
 			else	
-				VoidMark.KoSButton.Icon:SetTexture("Interface\\AddOns\\VoidMark\\Textures\\button-off.tga")
+				VoidMark.KoSButton.Icon:SetTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\button-off.tga")
 			end
 			VoidMark.KoSButton:Show()
 		else

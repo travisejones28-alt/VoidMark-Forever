@@ -1,11 +1,12 @@
+local VMAPI = VoidMarkForever.API
 local FontStrings={}
 local FontFile
 local SM = LibStub:GetLibrary("LibSharedMedia-3.0")
 local _
 
-SM:Register("font", "Big Noodle Titling", [[Interface\AddOns\VoidMark\Fonts\BigNoodleTitling.ttf]])
-SM:Register("font", "Expressway", [[Interface\AddOns\VoidMark\Fonts\Expressway.ttf]])
-SM:Register("font", "Myriad", [[Interface\AddOns\VoidMark\Fonts\Myriad.ttf]])
+SM:Register("font", "Big Noodle Titling", [[Interface\AddOns\VoidMarkForever\Fonts\BigNoodleTitling.ttf]])
+SM:Register("font", "Expressway", [[Interface\AddOns\VoidMarkForever\Fonts\Expressway.ttf]])
+SM:Register("font", "Myriad", [[Interface\AddOns\VoidMarkForever\Fonts\Myriad.ttf]])
 
 function VoidMark:AddFontString(string)
 	local Font, Height, Flags

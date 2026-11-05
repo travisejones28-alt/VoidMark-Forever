@@ -1,3 +1,4 @@
+local VMAPI = VoidMarkForever.API
 -- VOIDMARK NO-DELETE BUILD: permanent player statistics; age purge disabled.
 local AceLocale = LibStub("AceLocale-3.0")
 local L = AceLocale:GetLocale("VoidMark")
@@ -19,7 +20,7 @@ StaticPopupDialogs["VoidMark_SetKOSReasonOther"] = {
     OnAccept = function(self)
 		local editBox = self.GetEditBox and self:GetEditBox() or self.editBox
 		local reason = editBox:GetText()
-		VoidMark:SetKOSReason(self.playerName, reason, data)		
+		VoidMark:SetKOSReason(self.playerName, L["KOSReasonOther"], reason)
 	end,
 };
 
@@ -29,7 +30,7 @@ function VoidMark:RefreshCurrentList(player, source)
 		return
 	end
 
-	-- TALIAA VOIDMARK COMBAT-SAFE TARGETING:
+	-- TALIAA SPY COMBAT-SAFE TARGETING:
 	-- Secure target macros cannot be reassigned during combat.
 	-- Freeze the visible row/name assignments until combat ends so
 	-- each displayed player always matches the row's preloaded target.
@@ -244,7 +245,8 @@ function VoidMark:ManageNearbyListExpirations()
 	end
 	if VoidMark.db.profile.RemoveUndetected ~= "Never" then
 		for player in pairs(VoidMark.InactiveList) do
-			if (currentTime - VoidMark.InactiveList[player]) > VoidMark.InactiveTimeout then
+			local runBackPinned = VoidMark.IsRunBackPinned and VoidMark:IsRunBackPinned(player)
+			if (not runBackPinned) and (currentTime - VoidMark.InactiveList[player]) > VoidMark.InactiveTimeout then
 				VoidMark.InactiveList[player] = nil
 				VoidMark.NearbyList[player] = nil
 				expired = true
@@ -408,25 +410,24 @@ function VoidMark:RemoveIgnoreData(name)
 end
 
 function VoidMark:AddKOSData(name)
+	if not name or name == "" then return end
 	VoidMarkPerCharDB.KOSData[name] = time()
---	VoidMarkPerCharDB.PlayerData[name].kos = 1 
-	if VoidMark.db.profile.ShareKOSBetweenCharacters then
-		VoidMarkDB.removeKOSData[VoidMark.RealmName][VoidMark.FactionName][name] = nil
+	local playerData = VoidMarkPerCharDB.PlayerData[name]
+	if playerData then
+		playerData.kos = 1
 	end
 end
 
 function VoidMark:RemoveKOSData(name)
+	if not name or name == "" then return end
 	if VoidMarkPerCharDB.KOSData[name] then
 		local playerData = VoidMarkPerCharDB.PlayerData[name]
 		if playerData and playerData.reason then
 			playerData.reason = nil
 		end
 		VoidMarkPerCharDB.KOSData[name] = nil
-		if VoidMarkPerCharDB.PlayerData[name] then
-			VoidMarkPerCharDB.PlayerData[name].kos = nil
-		end
-		if VoidMark.db.profile.ShareKOSBetweenCharacters then
-			VoidMarkDB.removeKOSData[VoidMark.RealmName][VoidMark.FactionName][name] = time()
+		if playerData then
+			playerData.kos = nil
 		end
 	end
 end
@@ -492,9 +493,9 @@ function VoidMark:AlertPlayer(player, source)
 		end
 		if VoidMark.db.profile.EnableSound then
 			if source ~= nil and source ~= VoidMark.CharacterName then
-				PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-kosaway.mp3", VoidMark.db.profile.SoundChannel)
+				PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-kosaway.mp3", VoidMark.db.profile.SoundChannel)
 			else
-				PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-kos.mp3", VoidMark.db.profile.SoundChannel)
+				PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-kos.mp3", VoidMark.db.profile.SoundChannel)
 			end
 		end
 		if VoidMark.db.profile.ShareKOSBetweenCharacters then VoidMark:RegenerateKOSCentralList(player) end
@@ -514,18 +515,18 @@ function VoidMark:AlertPlayer(player, source)
 			end
 			if VoidMark.db.profile.EnableSound then
 				if source ~= nil and source ~= VoidMark.CharacterName then
-					PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-kosaway.mp3", VoidMark.db.profile.SoundChannel)
+					PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-kosaway.mp3", VoidMark.db.profile.SoundChannel)
 				else
-					PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-kosguild.mp3", VoidMark.db.profile.SoundChannel)
+					PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-kosguild.mp3", VoidMark.db.profile.SoundChannel)
 				end
 			end
 		else
 			if VoidMark.db.profile.EnableSound and not VoidMark.db.profile.OnlySoundKoS then 
 				if source == nil or source == VoidMark.CharacterName then
 					if playerData and VoidMark.db.profile.WarnOnRace and playerData.race == VoidMark.db.profile.SelectWarnRace then --++
-						PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-race.mp3", VoidMark.db.profile.SoundChannel) 
+						PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-race.mp3", VoidMark.db.profile.SoundChannel) 
 					else
-						PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-nearby.mp3", VoidMark.db.profile.SoundChannel)
+						PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-nearby.mp3", VoidMark.db.profile.SoundChannel)
 					end
 				end
 			end
@@ -533,14 +534,14 @@ function VoidMark:AlertPlayer(player, source)
 	elseif VoidMark.db.profile.EnableSound and not VoidMark.db.profile.OnlySoundKoS then 
 		if source == nil or source == VoidMark.CharacterName then
 			if playerData and VoidMark.db.profile.WarnOnRace and playerData.race == VoidMark.db.profile.SelectWarnRace then
-				PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-race.mp3", VoidMark.db.profile.SoundChannel) 
+				PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-race.mp3", VoidMark.db.profile.SoundChannel) 
 			else
-				PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-nearby.mp3", VoidMark.db.profile.SoundChannel)
+				PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-nearby.mp3", VoidMark.db.profile.SoundChannel)
 			end
 		end
 	elseif VoidMark.db.profile.EnableSound and not VoidMark.db.profile.OnlySoundKoS then
 		if source == nil or source == VoidMark.CharacterName then
-			PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-nearby.mp3", VoidMark.db.profile.SoundChannel)
+			PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-nearby.mp3", VoidMark.db.profile.SoundChannel)
 		end
 	end
 end
@@ -591,7 +592,7 @@ function VoidMark:AlertStealthPlayer(player)
 			VoidMark:ShowAlert("stealth", player)
 		end
 		if VoidMark.db.profile.EnableSound then
-			PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-stealth.mp3", VoidMark.db.profile.SoundChannel)
+			PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-stealth.mp3", VoidMark.db.profile.SoundChannel)
 		end
 	end
 end
@@ -607,7 +608,7 @@ function VoidMark:AlertProwlPlayer(player)
 			VoidMark:ShowAlert("prowl", player)
 		end
 		if VoidMark.db.profile.EnableSound then
-			PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\detected-stealth.mp3", VoidMark.db.profile.SoundChannel)
+			PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\detected-stealth.mp3", VoidMark.db.profile.SoundChannel)
 		end
 	end
 end
@@ -619,7 +620,7 @@ function VoidMark:AnnouncePlayer(player, channel)
 		local playerData = VoidMarkPerCharDB.PlayerData[player]
 
 		local announce = VoidMark.db.profile.Announce  
-		if channel or announce == "Self" or announce == "LocalDefense" or (announce == "Guild" and GetGuildInfo("player") ~= nil and not VoidMark.InInstance) or (announce == "Party" and GetNumGroupMembers() > 0) or (announce == "Raid" and UnitInRaid("player")) then --++
+		if channel or announce == "Self" or announce == "LocalDefense" or (announce == "Guild" and VMAPI.GetGuildInfo("player") ~= nil and not VoidMark.InInstance) or (announce == "Party" and GetNumGroupMembers() > 0) or (announce == "Raid" and VoidMarkForever.API.UnitInRaid("player")) then --++
 			if announce == "Self" and not channel then
 				if isKOS then
 					msg = msg..L["VoidMarkSignatureColored"]..L["KillOnSightDetectedColored"]..player.." "
@@ -663,7 +664,7 @@ function VoidMark:AnnouncePlayer(player, channel)
 
 			if channel then
 				-- announce to selected channel
-				if (channel == "PARTY" and GetNumGroupMembers() > 0) or (channel == "RAID" and UnitInRaid("player")) or (channel == "GUILD" and GetGuildInfo("player") ~= nil) then
+				if (channel == "PARTY" and GetNumGroupMembers() > 0) or (channel == "RAID" and VoidMarkForever.API.UnitInRaid("player")) or (channel == "GUILD" and VMAPI.GetGuildInfo("player") ~= nil) then
 					SendChatMessage(msg, channel)
 				elseif channel == "LOCAL" then
 					SendChatMessage(msg, "CHANNEL", nil, GetChannelName(L["LocalDefenseChannelName"].." - "..GetZoneText()))
@@ -695,13 +696,13 @@ function VoidMark:ToggleIgnorePlayer(ignore, player)
 		VoidMark:AddIgnoreData(player)
 		VoidMark:RemoveKOSData(player)
 		if VoidMark.db.profile.EnableSound then
-			PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\list-add.mp3", VoidMark.db.profile.SoundChannel)
+			PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\list-add.mp3", VoidMark.db.profile.SoundChannel)
 		end
 		DEFAULT_CHAT_FRAME:AddMessage(L["VoidMarkSignatureColored"]..L["PlayerAddedToIgnoreColored"]..player)
 	else
 		VoidMark:RemoveIgnoreData(player)
 		if VoidMark.db.profile.EnableSound then
-			PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\list-remove.mp3", VoidMark.db.profile.SoundChannel)
+			PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\list-remove.mp3", VoidMark.db.profile.SoundChannel)
 		end
 		DEFAULT_CHAT_FRAME:AddMessage(L["VoidMarkSignatureColored"]..L["PlayerRemovedFromIgnoreColored"]..player)
 	end
@@ -713,22 +714,23 @@ function VoidMark:ToggleIgnorePlayer(ignore, player)
 end
 
 function VoidMark:ToggleKOSPlayer(kos, player)
+	if not player or player == "" then return end
 	if kos then
 		VoidMark:AddKOSData(player)
 		VoidMark:RemoveIgnoreData(player)
-		if player ~= VoidMarkPerCharDB.PlayerData[name] then
+		if not VoidMarkPerCharDB.PlayerData[player] then
 --			VoidMark:UpdatePlayerData(player, nil, nil, nil, nil, nil, true, nil, nil)
 			VoidMark:UpdatePlayerStatus(player, nil, nil, nil, nil, nil, true, nil, nil)
-			VoidMarkPerCharDB.PlayerData[player].kos = 1
-		end	
+		end
+		VoidMarkPerCharDB.PlayerData[player].kos = 1
 		if VoidMark.db.profile.EnableSound then
-			PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\list-add.mp3", VoidMark.db.profile.SoundChannel)
+			PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\list-add.mp3", VoidMark.db.profile.SoundChannel)
 		end
 		DEFAULT_CHAT_FRAME:AddMessage(L["VoidMarkSignatureColored"]..L["PlayerAddedToKOSColored"]..player)
 	else
 		VoidMark:RemoveKOSData(player)
 		if VoidMark.db.profile.EnableSound then
-			PlaySoundFile("Interface\\AddOns\\VoidMark\\Sounds\\list-remove.mp3", VoidMark.db.profile.SoundChannel)
+			PlaySoundFile("Interface\\AddOns\\VoidMarkForever\\Sounds\\list-remove.mp3", VoidMark.db.profile.SoundChannel)
 		end
 		DEFAULT_CHAT_FRAME:AddMessage(L["VoidMarkSignatureColored"]..L["PlayerRemovedFromKOSColored"]..player)
 	end
@@ -763,106 +765,19 @@ function VoidMark:RegenerateKOSGuildList()
 end
 
 function VoidMark:RemoveLocalKOSPlayers()
-	for player in pairs(VoidMarkPerCharDB.KOSData) do
-		if VoidMarkDB.removeKOSData[VoidMark.RealmName][VoidMark.FactionName][player] then
-			VoidMark:RemoveKOSData(player)
-		end
-	end
+	-- Retired in VoidMark. KOSData inside VoidMarkDB.TaliaaShared is authoritative.
+	-- Never consume legacy removeKOSData tombstones.
+	return
 end
-
 function VoidMark:RegenerateKOSCentralList(player)
-	if player then
-		local playerData = VoidMarkPerCharDB.PlayerData[player]
-		VoidMarkDB.kosData[VoidMark.RealmName][VoidMark.FactionName][VoidMark.CharacterName][player] = {}
-		if playerData then
-			VoidMarkDB.kosData[VoidMark.RealmName][VoidMark.FactionName][VoidMark.CharacterName][player] = playerData
-		end
-		VoidMarkDB.kosData[VoidMark.RealmName][VoidMark.FactionName][VoidMark.CharacterName][player].added = VoidMarkPerCharDB.KOSData[player]
-	else
-		for player in pairs(VoidMarkPerCharDB.KOSData) do
-			local playerData = VoidMarkPerCharDB.PlayerData[player]
-			VoidMarkDB.kosData[VoidMark.RealmName][VoidMark.FactionName][VoidMark.CharacterName][player] = {}
-			if playerData then
-				VoidMarkDB.kosData[VoidMark.RealmName][VoidMark.FactionName][VoidMark.CharacterName][player] = playerData
-			end
-			VoidMarkDB.kosData[VoidMark.RealmName][VoidMark.FactionName][VoidMark.CharacterName][player].added = VoidMarkPerCharDB.KOSData[player]
-		end
-	end
+	-- Retired in VoidMark. VoidMarkDB.kosData remains read-only legacy recovery data.
+	return
 end
-
 function VoidMark:RegenerateKOSListFromCentral()
-	local kosData = VoidMarkDB.kosData[VoidMark.RealmName][VoidMark.FactionName]
-	for characterName in pairs(kosData) do
-		if characterName ~= VoidMark.CharacterName then
-			local characterKosData = kosData[characterName]
-			for player in pairs(characterKosData) do
-				if not VoidMarkDB.removeKOSData[VoidMark.RealmName][VoidMark.FactionName][player] then
-					local playerData = VoidMarkPerCharDB.PlayerData[player]
-					if not playerData then
-						playerData = VoidMark:AddPlayerData(player, class, level, race, guild, faction, isEnemy, isGuess, rank)
-					end
-					local kosPlayerData = characterKosData[player]
-					if kosPlayerData.time and (not playerData.time or (playerData.time and playerData.time < kosPlayerData.time)) then
-						playerData.time = kosPlayerData.time
-						if kosPlayerData.class then
-							playerData.class = kosPlayerData.class
-						end
-						if type(kosPlayerData.level) == "number" and (type(playerData.level) ~= "number" or playerData.level < kosPlayerData.level) then
-							playerData.level = kosPlayerData.level
-						end
-						if kosPlayerData.race then
-							playerData.race = kosPlayerData.race
-						end
-						if kosPlayerData.guild then
-							playerData.guild = kosPlayerData.guild
-						end
-						if kosPlayerData.faction then
-							playerData.faction = kosPlayerData.faction
-						end
-						if kosPlayerData.isEnemy then
-							playerData.isEnemy = kosPlayerData.isEnemy
-						end
-						if kosPlayerData.isGuess then
-							playerData.isGuess = kosPlayerData.isGuess
-						end
-						if type(kosPlayerData.wins) == "number" and (type(playerData.wins) ~= "number" or playerData.wins < kosPlayerData.wins) then
-							playerData.wins = kosPlayerData.wins
-						end
-						if type(kosPlayerData.loses) == "number" and (type(playerData.loses) ~= "number" or playerData.loses < kosPlayerData.loses) then
-							playerData.loses = kosPlayerData.loses
-						end
-						if kosPlayerData.mapX then
-							playerData.mapX = kosPlayerData.mapX
-						end
-						if kosPlayerData.mapY then
-							playerData.mapY = kosPlayerData.mapY
-						end
-						if kosPlayerData.zone then
-							playerData.zone = kosPlayerData.zone
-						end
-						if kosPlayerData.mapID then
-							playerData.mapID = kosPlayerData.mapID
-						end
-						if kosPlayerData.subZone then
-							playerData.subZone = kosPlayerData.subZone
-						end
-						if kosPlayerData.reason then
-							playerData.reason = {}
-							for reason in pairs(kosPlayerData.reason) do
-								playerData.reason[reason] = kosPlayerData.reason[reason]
-							end
-						end
-					end
-					local characterKOSPlayerData = VoidMarkPerCharDB.KOSData[player]
-					if kosPlayerData.added and (not characterKOSPlayerData or characterKOSPlayerData < kosPlayerData.added) then
-						VoidMarkPerCharDB.KOSData[player] = kosPlayerData.added
-					end
-				end
-			end
-		end
-	end
+	-- Retired in VoidMark. Legacy central KOS mirrors must never overwrite or
+	-- delete the canonical account-wide TaliaaShared.KOSData table.
+	return
 end
-
 function VoidMark:ButtonClicked(self, button)
 	local name = VoidMark.ButtonName[self.id]
 	if name and name ~= "" then
@@ -880,17 +795,7 @@ function VoidMark:ButtonClicked(self, button)
 					VoidMark:ToggleIgnorePlayer(true, name)
 				end
 			else
-				-- Refresh the exact secure target immediately before the secure
-				-- click executes, matching the known-working Forever VoidMark behavior.
-				-- Forever's internal key is Main-Secondary, while slash targeting
-				-- uses the player-facing "Main Secondary" form.
-				if not InCombatLockdown() then
-					local targetName = (VoidMarkForever and VoidMarkForever.TargetName and VoidMarkForever.TargetName(name)) or name
-					local macroText = "/targetexact " .. tostring(targetName)
-					self:SetAttribute("type1", "macro")
-					self:SetAttribute("macrotext1", macroText)
-					self:SetAttribute("macrotext", macroText)
-				end
+				-- Normal targeting is handled by the secure row macro.
 			end
 		elseif button == "RightButton" then
 			VoidMark:BarDropDownOpen(self)
@@ -997,20 +902,20 @@ function VoidMark:ParseUnitDetails(player, class, level, race, zone, subZone, ma
 end
 
 function VoidMark:AddDetected(player, timestamp, learnt, source)
-	-- VoidMark Panic Tracker: remember locally seen enemies for 30-second count.
+	-- TaliaaVoidMark Panic Tracker: remember locally seen enemies for 30-second count.
 	if TaliaaGankTracker and TaliaaGankTracker.NoteEnemySeen then
 		TaliaaGankTracker:NoteEnemySeen(player, timestamp, source)
 	end
 
 	if VoidMark.db.profile.StopAlertsOnTaxi then
-		if not UnitOnTaxi("player") then 
+		if not VoidMarkForever.API.UnitOnTaxi("player") then 
 			VoidMark:AddDetectedToLists(player, timestamp, learnt, source)
 		end
 	else
 		VoidMark:AddDetectedToLists(player, timestamp, learnt, source)
 	end
 --[[if VoidMark.db.profile.ShowOnlyPvPFlagged then
-		if UnitIsPVP("target") then
+		if VMAPI.UnitIsPVP("target") then
 			VoidMark:AddDetectedToLists(player, timestamp, learnt, source)
 		end	
 	else

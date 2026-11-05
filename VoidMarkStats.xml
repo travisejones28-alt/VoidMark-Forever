@@ -314,7 +314,7 @@
                 </Anchors>
 <!--               <Layers>
                     <Layer level="OVERLAY">
-						<Texture file="Interface\Addons\VoidMark\Textures\IconBorder.tga">
+						<Texture file="Interface\AddOns\VoidMarkForever\Textures\IconBorder.tga">
 						</Texture>
 					</Layer>
                     <Layer level="ARTWORK">

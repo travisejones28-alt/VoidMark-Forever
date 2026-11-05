@@ -1,3 +1,4 @@
+local VMAPI = VoidMarkForever.API
 -- VOIDMARK STATISTICS BUILD: permanent history + custom VoidMark skin.
 VoidMarkStats = VoidMark:NewModule("VoidMarkStats", "AceTimer-3.0")
 local L = LibStub("AceLocale-3.0"):GetLocale("VoidMark", true)
@@ -381,37 +382,73 @@ function VoidMarkStats:SetSortColumn(name)
 end
 
 function VoidMarkStats:Recalulate()
-    if not self:IsShown() or not self:IsEnabled() then
-		return
-	end
+    if not self:IsShown() or not self:IsEnabled() then return end
 
     self.newevents = false
     VoidMarkStatsRefreshButton:UnlockHighlight()
 
-    local tab = PanelTemplates_GetSelectedTab(VoidMarkStatsTabFrame)
+    -- Always clear the previous snapshot. Leaving stale rows here made repeated
+    -- refreshes/reloads mix old and new history.
+    for j = #units.recent, 1, -1 do units.recent[j] = nil end
+    for j = #units.display, 1, -1 do units.display[j] = nil end
 
-    local i = 1
-    local totalWins = 0
-    local totalLoses = 0
+    local tab = PanelTemplates_GetSelectedTab(VoidMarkStatsTabFrame)
+    local totalWins, totalLoses = 0, 0
 
     if tab == TAB_PLAYER then
-        for _, unit in VoidMarkData:GetPlayers(self.sortBy) do
-            units.recent[i] = unit
-            totalWins = totalWins + (tonumber(unit.wins) or 0)
-            totalLoses = totalLoses + (tonumber(unit.loses) or 0)
-            i = i + 1
+        local repo = TaliaaGankRepository
+        local rows = repo and repo.GetStatisticsSnapshot and repo:GetStatisticsSnapshot() or {}
+
+        -- The repository snapshot already merges VoidMark PlayerData + permanent
+        -- repository + legacy floors. Copy rows so this UI never mutates the
+        -- underlying VoidMark player records while displaying merged totals.
+        for _, hist in ipairs(rows) do
+            local unit = {
+                name = hist.name,
+                guid = hist.guid,
+                level = hist.level or "?",
+                rank = hist.rank or 0,
+                class = hist.class,
+                guild = hist.guild or "?",
+                wins = tonumber(hist.wins) or 0,
+                loses = tonumber(hist.loses) or 0,
+                time = tonumber(hist.time) or 0,
+                zone = hist.zone,
+                subZone = hist.subZone,
+                reason = hist.reason,
+                kos = hist.kos and true or false,
+                faction = hist.faction,
+            }
+            units.recent[#units.recent + 1] = unit
+            totalWins = totalWins + unit.wins
+            totalLoses = totalLoses + unit.loses
         end
+
+        table.sort(units.recent, function(a, b)
+            local sortBy = self.sortBy
+            if sortBy == "name" then
+                return tostring(a.name or "") < tostring(b.name or "")
+            elseif sortBy == "wins" then
+                if (tonumber(a.wins) or 0) ~= (tonumber(b.wins) or 0) then
+                    return (tonumber(a.wins) or 0) > (tonumber(b.wins) or 0)
+                end
+            elseif sortBy == "loses" then
+                if (tonumber(a.loses) or 0) ~= (tonumber(b.loses) or 0) then
+                    return (tonumber(a.loses) or 0) > (tonumber(b.loses) or 0)
+                end
+            end
+            if (tonumber(a.time) or 0) ~= (tonumber(b.time) or 0) then
+                return (tonumber(a.time) or 0) > (tonumber(b.time) or 0)
+            end
+            return tostring(a.name or "") < tostring(b.name or "")
+        end)
     end
 
     self.VoidMarkSummary = {
-        marks = i - 1,
+        marks = #units.recent,
         wins = totalWins,
         loses = totalLoses,
     }
-
-    for j = i, #units.recent do
-		units.recent[j] = nil
-	end
 
     self:Filter()
 end
@@ -456,6 +493,14 @@ function VoidMarkStats:Filter()
 end
 
 function VoidMarkStats:Refresh()
+    -- FauxScrollFrame invokes this as a plain callback (VoidMarkStats.Refresh),
+    -- so "self" can be the scroll frame instead of the VoidMarkStats addon object.
+    -- Normalize it here so scrolling never loses the cached full-data footer
+    -- summary and temporarily renders W/L/% as zero.
+    if self ~= VoidMarkStats then
+        self = VoidMarkStats
+    end
+
     if self.refreshing then
 		return
 	end
@@ -526,12 +571,13 @@ function VoidMarkStats:Refresh()
                 rank:SetTextColor(r, g, b)
 
                 local class = GUI.ListFrameFields[view][row]["Class"]
-				local classtext = unit.class
-				if classtext then
-					classtext = (L[classtext])
-				else
-					classtext = "?"
-				end	
+                local classKey = type(unit.class) == "string" and unit.class or ""
+                local classtext = "?"
+                if classKey ~= "" then
+                    -- AceLocale throws on L[""]. Recovered legacy rows may
+                    -- legitimately have no class metadata.
+                    classtext = L[classKey] or classKey
+                end
                 class:SetText(classtext)
                 local classColor = unit.class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[unit.class]
                 if classColor then

@@ -1,8 +1,9 @@
+local VMAPI = VoidMarkForever.API
 -- VoidMark Stage 2 UI layer
 -- UI Adjust 1: tighter compact header; backend/data behavior unchanged.
--- Keeps the existing VoidMark backend, SavedVariables, secure target rows,
--- detection logic and synchronization intact while replacing the visible
--- main-window presentation with a compact Shadow Priest themed shell.
+-- Keeps the existing VoidMark/VoidMark backend, SavedVariables, secure target rows,
+-- detection logic and synchronization intact while replacing the
+-- visible main-window presentation with a compact Shadow Priest themed shell.
 
 local VM = {}
 VoidMark.VoidMark = VM
@@ -12,6 +13,7 @@ VM.PURPLE = {0.56, 0.20, 0.82}
 VM.PURPLE_BRIGHT = {0.76, 0.42, 1.00}
 VM.BG = {0.015, 0.010, 0.025, 0.97}
 VM.ROW_UNKNOWN = {0.075, 0.075, 0.095}
+VM.ROW_LOW = {0.025, 0.17, 0.09}
 VM.ROW_KOS = {0.38, 0.035, 0.05}
 VM.ROW_STEALTH = {0.20, 0.045, 0.31}
 
@@ -149,7 +151,7 @@ function VM:ManageAllPlayers()
 end
 
 -- Extend the existing dropdown-backed list model without changing the first four
--- indices used by the old VoidMark backend. Only the All Players view is added.
+-- indices used by the old VoidMark backend. High Risk and Hunt List were retired.
 if VoidMark.ListTypes and not VM.ListTypesInstalled then
     VoidMark.ListTypes[1][2] = function() VM:ManageNearby() end
     table.insert(VoidMark.ListTypes, {"All Players", function() VM:ManageAllPlayers() end})
@@ -232,10 +234,67 @@ local function BuildGearMenu(self, level)
 
     Add("Statistics", function() if VoidMarkStats then VoidMarkStats:Toggle() end end)
     Add("Settings", function() if VoidMark.ShowConfig then VoidMark:ShowConfig() end end)
+    Add("Kill Effects", function()
+        if VoidMarkKillEffects and VoidMarkKillEffects.ToggleOptions then
+            VoidMarkKillEffects:ToggleOptions()
+        end
+    end)
+    Add("Damage Records", function()
+        if VoidMarkDamageRecords and VoidMarkDamageRecords.Toggle then
+            VoidMarkDamageRecords:Toggle()
+        end
+    end)
+    local enemyMovesEnabled = VoidMarkEnemyMoves
+        and VoidMarkEnemyMoves.IsEnabled
+        and VoidMarkEnemyMoves:IsEnabled()
+
+    Add(enemyMovesEnabled and "Enemy Moves: ON" or "Enemy Moves: OFF", function()
+        if VoidMarkEnemyMoves and VoidMarkEnemyMoves.ToggleEnabled then
+            VoidMarkEnemyMoves:ToggleEnabled()
+        end
+    end)
+
+    local panicEnabled = TaliaaGankTracker
+        and TaliaaGankTracker.IsPanicEnabled
+        and TaliaaGankTracker:IsPanicEnabled()
+
+    Add(panicEnabled and "Panic: ON" or "Panic: OFF", function()
+        if TaliaaGankTracker and TaliaaGankTracker.TogglePanicEnabled then
+            TaliaaGankTracker:TogglePanicEnabled()
+        end
+    end)
+
+    local sapAlertEnabled = TaliaaGankTracker
+        and TaliaaGankTracker.IsSapAlertEnabled
+        and TaliaaGankTracker:IsSapAlertEnabled()
+
+    Add(sapAlertEnabled and "Sap Alert: ON" or "Sap Alert: OFF", function()
+        if TaliaaGankTracker and TaliaaGankTracker.ToggleSapAlertEnabled then
+            TaliaaGankTracker:ToggleSapAlertEnabled()
+        end
+    end)
+    local kosEnabled = VoidMarkDB and VoidMarkDB.VoidMarkKOSWho
+        and VoidMarkDB.VoidMarkKOSWho.enabled ~= false
+    Add(kosEnabled and "KOS Alert: ON" or "KOS Alert: OFF", function()
+        VoidMarkDB = VoidMarkDB or {}
+        VoidMarkDB.VoidMarkKOSWho = VoidMarkDB.VoidMarkKOSWho or {}
+        VoidMarkDB.VoidMarkKOSWho.enabled = not (VoidMarkDB.VoidMarkKOSWho.enabled ~= false)
+    end)
+    Add("Taunt", function()
+        if VoidMarkTaunt and VoidMarkTaunt.Toggle then VoidMarkTaunt.Toggle() end
+    end)
+    Add("Boat Timers", function()
+        if VoidMarkBoats and VoidMarkBoats.Toggle then VoidMarkBoats:Toggle() end
+    end)
+    Add("Ride or Die", function()
+        if VoidMarkRideOrDie and VoidMarkRideOrDie.ToggleUI then VoidMarkRideOrDie:ToggleUI() end
+    end)
     if TaliaaGankTracker and TaliaaGankTracker.Frame then
         local shown = TaliaaGankTracker.Frame:IsShown()
         Add(shown and "Hide Gank Tracker" or "Show Gank Tracker", function()
-            if TaliaaGankTracker and TaliaaGankTracker.Frame then
+            if TaliaaGankTracker and TaliaaGankTracker.ToggleWindow then
+                TaliaaGankTracker:ToggleWindow()
+            elseif TaliaaGankTracker and TaliaaGankTracker.Frame then
                 if TaliaaGankTracker.Frame:IsShown() then
                     TaliaaGankTracker.Frame:Hide()
                 else
@@ -422,7 +481,7 @@ function VM:ApplyMainSkin()
         f.VoidMarkGeneratedHeader:SetPoint("TOPLEFT", f, "TOPLEFT", 3, -3)
         f.VoidMarkGeneratedHeader:SetPoint("TOPRIGHT", f, "TOPRIGHT", -3, -3)
         f.VoidMarkGeneratedHeader:SetHeight(VM.HEADER_HEIGHT - 6)
-        f.VoidMarkGeneratedHeader:SetTexture("Interface\\AddOns\\VoidMark\\Textures\\VoidMarkGeneratedHeader.tga")
+        f.VoidMarkGeneratedHeader:SetTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\VoidMarkGeneratedHeader.tga")
         f.VoidMarkGeneratedHeader:SetTexCoord(0, 1, 0, 1)
     end
 
@@ -518,6 +577,49 @@ function VM:ApplyMainSkin()
         end)
     end
 
+    -- Draw compact GT stats in two blocks so the center logo/signature remains
+    -- clear: K/U/R on the far left, DK/K-S on the far right.
+    if not f.VoidMarkGTCompactFrame then
+        local cf = CreateFrame("Frame", nil, f)
+        f.VoidMarkGTCompactFrame = cf
+        cf:SetSize(430, 14)
+        cf:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -67)
+        cf:SetFrameLevel(f:GetFrameLevel() + 40)
+        cf:EnableMouse(false)
+
+        local left = cf:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        f.VoidMarkGTCompactTextLeft = left
+        left:SetPoint("LEFT", cf, "LEFT", 0, 0)
+        left:SetPoint("TOP", cf, "TOP", 0, 0)
+        left:SetPoint("BOTTOM", cf, "BOTTOM", 0, 0)
+        left:SetWidth(150)
+        left:SetJustifyH("LEFT")
+        left:SetJustifyV("MIDDLE")
+        left:SetText("K 0   U 0   R 0")
+        left:SetTextColor(0.88, 0.78, 0.96, 1)
+        SetFont(left, "Fonts\\FRIZQT__.TTF", 10, "OUTLINE", GameFontHighlightSmall)
+
+        local right = cf:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        f.VoidMarkGTCompactTextRight = right
+        -- Anchor directly to the main VoidMark frame so DK/K-S stays tucked
+        -- inside the lower-right edge instead of inheriting the compact frame width.
+        right:SetPoint("TOPRIGHT", f, "TOPRIGHT", -12, -67)
+        right:SetWidth(112)
+        right:SetHeight(14)
+        right:SetJustifyH("RIGHT")
+        right:SetJustifyV("MIDDLE")
+        right:SetText("DK 0   K/S 0")
+        right:SetTextColor(0.88, 0.78, 0.96, 1)
+        SetFont(right, "Fonts\\FRIZQT__.TTF", 10, "OUTLINE", GameFontHighlightSmall)
+
+        -- Backward-compatible alias so older code paths do not error.
+        f.VoidMarkGTCompactText = left
+
+        if TaliaaGankTracker and TaliaaGankTracker.RefreshVoidMarkCompact then
+            TaliaaGankTracker:RefreshVoidMarkCompact()
+        end
+    end
+
     if not f.VoidMarkModeButton then
         local b = CreateFrame("Button", nil, f, "BackdropTemplate")
         f.VoidMarkModeButton = b
@@ -578,6 +680,25 @@ function VM:StyleRow(num, name, desc, opacity)
 
     local data = SafePlayerData(name)
     local class = data and data.class
+
+    -- Feed row hover into Enemy Moves. Keep the existing row scripts intact:
+    -- hovering only previews a player when we currently have live cooldowns
+    -- recorded for them, and leaving restores the pinned/current enemy.
+    row.VoidMarkEnemyMovesName = name
+    row.VoidMarkEnemyMovesGUID = data and data.guid
+    if not row.VoidMarkEnemyMovesHoverHooked then
+        row.VoidMarkEnemyMovesHoverHooked = true
+        row:HookScript("OnEnter", function(self)
+            if VoidMarkEnemyMoves and VoidMarkEnemyMoves.HoverPlayer then
+                VoidMarkEnemyMoves:HoverPlayer(self.VoidMarkEnemyMovesName,self.VoidMarkEnemyMovesGUID)
+            end
+        end)
+        row:HookScript("OnLeave", function()
+            if VoidMarkEnemyMoves and VoidMarkEnemyMoves.ClearHover then
+                VoidMarkEnemyMoves:ClearHover()
+            end
+        end)
+    end
     local r, g, b = ClassColor(class)
     local isKOS = IsKOS(name)
     local isStealth = IsStealth(name)
@@ -589,13 +710,22 @@ function VM:StyleRow(num, name, desc, opacity)
         marker = "|TInterface\\Icons\\Ability_Stealth:13:13:0:0|t "
     end
 
-    -- Main Nearby/KOS/etc. rows only show the character name.
-    -- Keep the full Name-Realm internally on row.Name/VoidMark.ButtonName so
-    -- targeting, KOS, history and cross-realm database lookups still work.
-    local displayName = (VoidMarkForever and VoidMarkForever.DisplayName and VoidMarkForever.DisplayName(name))
-        or (tostring(name):match("^([^%-]+)") or tostring(name))
+    local displayName = VoidMarkForever.DisplayName(name)
     row.LeftText:SetText(marker .. displayName)
     row.LeftText:SetTextColor(r, g, b, opacity or 1)
+
+    local status = isKOS and "|cffff4d5dKOS|r" or ""
+
+    -- Integrated corpse run timer.
+    local runBack = VoidMark.GetRunBackDisplay and VoidMark:GetRunBackDisplay(name) or nil
+    local runBackTime = ""
+    local runBackColor = "|cffffd84d"
+    if runBack then
+        if runBack.ready then
+            runBackColor = "|cffff5b65"
+        end
+        runBackTime = runBack.time or ""
+    end
 
     local levelText = (data and data.level) and tostring(data.level) or ""
     local classIcon = ClassIconTag(class, 16)
@@ -603,7 +733,6 @@ function VM:StyleRow(num, name, desc, opacity)
         classIcon = tostring(class)
     end
 
-    -- Personal lifetime record against this player.
     local kills = tonumber(data and data.wins) or 0
     local deaths = tonumber(data and data.loses) or 0
     if TaliaaGankRepository and TaliaaGankRepository.GetHistoricalStats then
@@ -619,7 +748,6 @@ function VM:StyleRow(num, name, desc, opacity)
         if font and size then fs:SetFont(font, size, flags or "") end
     end
 
-    -- Record: far-right column.
     if not row.VoidMarkRecordText then
         row.VoidMarkRecordText = row.StatusBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.VoidMarkRecordText:SetJustifyH("RIGHT")
@@ -627,11 +755,14 @@ function VM:StyleRow(num, name, desc, opacity)
     end
     row.VoidMarkRecordText:ClearAllPoints()
     row.VoidMarkRecordText:SetPoint("RIGHT", row.StatusBar, "RIGHT", -2, 0)
-    row.VoidMarkRecordText:SetWidth(31)
+    row.VoidMarkRecordText:SetWordWrap(false)
     row.VoidMarkRecordText:SetText(record)
+    -- Fit multi-digit lifetime records (e.g. 14-19) on one line.
+    -- GetStringWidth measures rendered text without counting WoW color codes.
+    local recordWidth = math.max(31, math.ceil(row.VoidMarkRecordText:GetStringWidth() + 5))
+    row.VoidMarkRecordText:SetWidth(recordWidth)
     row.VoidMarkRecordText:SetTextColor(0.73, 0.64, 0.79, opacity or 1)
 
-    -- Class: immediately left of the record.
     if not row.VoidMarkClassText then
         row.VoidMarkClassText = row.StatusBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         row.VoidMarkClassText:SetJustifyH("CENTER")
@@ -643,7 +774,6 @@ function VM:StyleRow(num, name, desc, opacity)
     row.VoidMarkClassText:SetText(classIcon)
     row.VoidMarkClassText:SetTextColor(0.90, 0.90, 0.94, opacity or 1)
 
-    -- Level: immediately left of the class icon.
     row.RightText:ClearAllPoints()
     row.RightText:SetPoint("RIGHT", row.VoidMarkClassText, "LEFT", -3, 0)
     row.RightText:SetWidth(24)
@@ -651,8 +781,42 @@ function VM:StyleRow(num, name, desc, opacity)
     row.RightText:SetText(levelText)
     row.RightText:SetTextColor(0.90, 0.90, 0.94, opacity or 1)
 
+    if not row.VoidMarkThreatText then
+        row.VoidMarkThreatText = row.StatusBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.VoidMarkThreatText:SetJustifyH("RIGHT")
+        MatchRightFont(row.VoidMarkThreatText)
+    end
+    row.VoidMarkThreatText:ClearAllPoints()
+    row.VoidMarkThreatText:SetPoint("RIGHT", row.RightText, "LEFT", -3, 0)
+    row.VoidMarkThreatText:SetWidth(42)
+    row.VoidMarkThreatText:SetText(status)
+    row.VoidMarkThreatText:SetTextColor(0.90, 0.90, 0.94, opacity or 1)
+
+    if not row.VoidMarkRunBackTime then
+        row.VoidMarkRunBackTime = row.StatusBar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.VoidMarkRunBackTime:SetJustifyH("RIGHT")
+        row.VoidMarkRunBackTime:SetWordWrap(false)
+        MatchRightFont(row.VoidMarkRunBackTime)
+    end
+    row.VoidMarkRunBackTime:ClearAllPoints()
+    row.VoidMarkRunBackTime:SetPoint("RIGHT", row.VoidMarkThreatText, "LEFT", -4, 0)
+    row.VoidMarkRunBackTime:SetWidth(48)
+    row.VoidMarkRunBackTime:SetText(runBackColor .. runBackTime .. "|r")
+    row.VoidMarkRunBackTime:SetTextColor(1, 1, 1, opacity or 1)
+
+    if row.VoidMarkRunBackLabel then
+        row.VoidMarkRunBackLabel:SetText("")
+        row.VoidMarkRunBackLabel:Hide()
+    end
+    if row.VoidMarkRunBackText then
+        row.VoidMarkRunBackText:SetText("")
+        row.VoidMarkRunBackText:Hide()
+    end
+
     local cr, cg, cb = VM.ROW_UNKNOWN[1], VM.ROW_UNKNOWN[2], VM.ROW_UNKNOWN[3]
-    if isKOS then
+    if runBack then
+        cr, cg, cb = 0.24, 0.025, 0.035
+    elseif isKOS then
         cr, cg, cb = VM.ROW_KOS[1], VM.ROW_KOS[2], VM.ROW_KOS[3]
     elseif isStealth then
         cr, cg, cb = VM.ROW_STEALTH[1], VM.ROW_STEALTH[2], VM.ROW_STEALTH[3]
@@ -662,14 +826,16 @@ function VM:StyleRow(num, name, desc, opacity)
     if VoidMark.db and VoidMark.db.profile and VoidMark.db.profile.CurrentList == 1 then
         local seenAt = VoidMark.NearbyList and VoidMark.NearbyList[name]
         local age = seenAt and (time() - seenAt) or 0
-        if age > 45 then alpha = math.min(alpha, 0.55)
-        elseif age > 15 then alpha = math.min(alpha, 0.78)
+        if age > 45 then
+            alpha = math.min(alpha, 0.55)
+        elseif age > 15 then
+            alpha = math.min(alpha, 0.78)
         end
     end
 
     row.StatusBar:SetStatusBarColor(cr, cg, cb, alpha)
-    -- Fixed right-side columns: Level | Class icon | Lifetime record.
-    local rightColumnsWidth = 24 + 3 + 20 + 3 + 31 + 4
+
+    local rightColumnsWidth = 46 + 4 + 42 + 3 + 24 + 3 + 20 + 3 + recordWidth + 4
     row.LeftText:SetWidth(math.max(40, row:GetWidth() - rightColumnsWidth - 4))
 end
 
@@ -733,11 +899,14 @@ function VM:CreateDetailsFrame()
     SetFont(f.Name, "Fonts\\FRIZQT__.TTF", 12, "OUTLINE", GameFontNormal)
 
     f.LevelClass = CreateDetailLabel(f, -50, "Identity")
-    f.Lifetime = CreateDetailLabel(f, -67, "Lifetime")
+    f.Threat = CreateDetailLabel(f, -67, "Threat")
+    f.Record = CreateDetailLabel(f, -84, "Fight Record")
+    f.Lifetime = CreateDetailLabel(f, -101, "Lifetime")
     f.Ganks = f.Lifetime
-    f.LastSeen = CreateDetailLabel(f, -84, "Last Seen")
-    f.Location = CreateDetailLabel(f, -101, "Location")
-    f.Note = CreateDetailLabel(f, -118, "Note")
+    f.Damage = CreateDetailLabel(f, -118, "Damage")
+    f.LastSeen = CreateDetailLabel(f, -135, "Last Seen")
+    f.Location = CreateDetailLabel(f, -152, "Location")
+    f.Note = CreateDetailLabel(f, -169, "Note")
 
     f.TargetButton = CreateFrame("Button", nil, f, "BackdropTemplate")
     f.TargetButton:SetSize(72, 20)
@@ -755,8 +924,7 @@ function VM:CreateDetailsFrame()
             UIErrorsFrame:AddMessage("VoidMark: use the Nearby row to target during combat.", 0.75, 0.45, 1.0, 1.0)
             return
         end
-        local targetName = (VoidMarkForever and VoidMarkForever.TargetName and VoidMarkForever.TargetName(name)) or name
-        if TargetByName then TargetByName(targetName, true) end
+        if TargetByName then TargetByName(VoidMarkForever.TargetName(name), true) end
     end)
 
     f.NoteButton = CreateFrame("Button", nil, f, "BackdropTemplate")
@@ -824,6 +992,12 @@ function VoidMark:ShowVoidMarkDetails(name)
     local identity = "L" .. tostring(data.level or "?") .. " " .. tostring(data.class and (RAID_CLASS_COLORS[data.class] and data.class or data.class) or "Unknown")
     f.LevelClass:SetText(identity)
 
+    if f.Threat then f.Threat:Hide() end
+    if f.Record then f.Record:Hide() end
+    if f.Damage then f.Damage:Hide() end
+
+    -- Lifetime is the old VoidMark/gank history. Keep it separate from the newer
+    -- fight-based threat record so archived kills do not appear to vanish.
     local kills = tonumber(data.wins) or 0
     local deaths = tonumber(data.loses) or 0
     if TaliaaGankRepository and TaliaaGankRepository.GetHistoricalStats then
@@ -846,8 +1020,8 @@ function VoidMark:ShowVoidMarkDetails(name)
     f:Show()
 end
 
--- Correct the old context-menu lookup to always use the real row name and add
--- the VoidMark Details action without changing the existing KOS/Ignore actions.
+-- Correct the old context-menu lookup to always use the real row name, then add
+-- Hunt/Details actions without changing the existing KOS/Ignore actions.
 local OriginalBarDropDown = VoidMark_CreateBarDropdown
 function VoidMark_CreateBarDropdown(self, level)
     OriginalBarDropDown(self, level)
@@ -866,9 +1040,8 @@ function VoidMark_CreateBarDropdown(self, level)
     UIDropDownMenu_AddButton(info, level)
 end
 
--- Forever's legacy UIDropDownMenu path is unreliable, so VoidMark owns its
--- row action menu. This keeps right-click actions independent of Blizzard's
--- dropdown implementation while preserving secure left-click targeting.
+-- Preserve normal secure click-targeting, but Shift+Click now opens the compact
+-- intel panel instead of toggling KOS. KOS remains available on right-click.
 local function EnsureVoidMarkContextMenu()
     if VM.ContextMenu then return VM.ContextMenu end
 
@@ -975,9 +1148,9 @@ function VoidMark:ButtonClicked(row, button)
         VoidMark:ShowVoidMarkContextMenu(row, name)
         return
     end
-    -- OriginalButtonClicked is a captured plain function whose first argument
-    -- is the row itself; do not pass the VoidMark addon table as an extra argument.
-    return OriginalButtonClicked(row, button)
+    -- The current list handler is a colon method: keep its addon, row and
+    -- button arguments aligned so control-click still toggles Ignore.
+    return OriginalButtonClicked(self, row, button)
 end
 
 local OriginalSetBar = VoidMark.SetBar
@@ -1085,7 +1258,7 @@ end
 -- Apply a queued mode change after combat, when secure row assignments can be
 -- safely rebuilt.
 local eventFrame = CreateFrame("Frame")
-eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+VoidMarkForever.RegisterEvent(eventFrame,"PLAYER_REGEN_ENABLED")
 eventFrame:SetScript("OnEvent", function()
     if VoidMark.VoidMarkPendingMode then
         local mode = VoidMark.VoidMarkPendingMode

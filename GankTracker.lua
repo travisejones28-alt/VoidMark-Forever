@@ -1,23 +1,81 @@
--- VoidMark Gank Tracker
-local GANKTRACKER_BUILD = "2026-09-15 HISTORICAL-IDENTITY-2-PERF89-DEATHFRAME"
+-- TaliaaVoidMark Gank Tracker
+-- Panic main-menu toggle: 2026-10-02
+local GANKTRACKER_BUILD = "2026-10-03 1.3.8 AUDIT"
 -- Daily combined kill tracker + reload-safe local session + global historical repository.
 -- Daily victim announcement count fix build: 2026-08-25
 
 TaliaaGankTracker = TaliaaGankTracker or {}
 local GT = TaliaaGankTracker
+-- Shared with RecordKill: declare before its closures, never as late locals.
+local recentOutgoingVictims = {}
+local recentConfirmedPlayerKills = {}
+local IsUnitCurrentlyFeigningName, MarkHunterFeign
+local lastLabel, syncButton
 local VOIDMARK_GANK_BUILD = "2026-09-03-stable-local-session"
 
 GT.totalKills = GT.totalKills or 0
 GT.uniqueKills = GT.uniqueKills or 0
 GT.victims = GT.victims or {}
+
+-- One-time migration for the streak feature: PARTY announcements start ON.
+-- After this migration the user's PARTY button choice is respected normally.
+if VoidMarkDB and not VoidMarkDB.VoidMarkStreakPartyDefaultV1 then
+    VoidMarkDB.TaliaaGankPartyAnnounce = true
+    VoidMarkDB.VoidMarkStreakPartyDefaultV1 = true
+end
+
 if VoidMarkDB and VoidMarkDB.TaliaaGankPartyAnnounce ~= nil then
     GT.partyAnnounce = VoidMarkDB.TaliaaGankPartyAnnounce and true or false
 else
-    GT.partyAnnounce = GT.partyAnnounce or false
+    if GT.partyAnnounce == nil then GT.partyAnnounce = true end
 end
 GT.seenEnemies = GT.seenEnemies or {}
 GT.recentKillEvents = GT.recentKillEvents or {}
 GT._pendingRevengeClaims = GT._pendingRevengeClaims or {}
+GT.recentHunterPetKills = GT.recentHunterPetKills or {}
+
+local function EnsureHunterPetStats()
+    if VoidMarkDB then
+        VoidMarkDB.TaliaaHunterPetKills = VoidMarkDB.TaliaaHunterPetKills or { total = 0, byName = {}, events = {} }
+        VoidMarkDB.TaliaaHunterPetKills.byName = VoidMarkDB.TaliaaHunterPetKills.byName or {}
+        VoidMarkDB.TaliaaHunterPetKills.events = VoidMarkDB.TaliaaHunterPetKills.events or {}
+        return VoidMarkDB.TaliaaHunterPetKills
+    end
+    GT._hunterPetFallback = GT._hunterPetFallback or { total = 0, byName = {}, events = {} }
+    GT._hunterPetFallback.events = GT._hunterPetFallback.events or {}
+    return GT._hunterPetFallback
+end
+
+local function HunterPetKillTotal()
+    local db = EnsureHunterPetStats()
+    return tonumber(db.total) or 0
+end
+
+local function RecordHunterPetKill(petName, petGUID)
+    local now = GetTime()
+    local key = tostring(petGUID or petName or "?")
+    local last = tonumber(GT.recentHunterPetKills[key])
+    if last and now - last < 6 then return false end
+    GT.recentHunterPetKills[key] = now
+
+    local db = EnsureHunterPetStats()
+    db.total = (tonumber(db.total) or 0) + 1
+    local name = tostring(petName or "Unknown Pet")
+    db.byName[name] = (tonumber(db.byName[name]) or 0) + 1
+    db.events = db.events or {}
+    local stamp = (GetServerTime and GetServerTime()) or time()
+    db.events[#db.events + 1] = { t = tonumber(stamp) or time(), name = name, guid = petGUID }
+
+    -- Today/Week only need recent timestamped events. Keep a bounded window so
+    -- the pet tracker cannot grow indefinitely while lifetime stays in db.total.
+    local cutoff = (tonumber(stamp) or time()) - (15 * 86400)
+    while #db.events > 0 and (tonumber(db.events[1] and db.events[1].t) or 0) < cutoff do
+        table.remove(db.events, 1)
+    end
+
+    GT._displayRefreshPending = true
+    return true
+end
 
 local function IsPlayerGUID(guid)
     guid = tostring(guid or "")
@@ -81,8 +139,114 @@ end
 
 EnsureAnnounceSettings()
 
-local PANIC_LEVEL = 60
 local PANIC_WINDOW_SECONDS = 30
+local PANIC_LEVEL_MARGIN = 3
+
+local SAP_SPELL_IDS = {
+    [6770] = true,  -- Sap Rank 1
+    [2070] = true,  -- Sap Rank 2
+    [11297] = true, -- Sap Rank 3
+}
+local lastSapAlertAt
+local recentRemoteSapAlerts = {}
+
+local function IsSapAlertEnabled()
+    if not VoidMarkDB then return true end
+    if VoidMarkDB.VoidMarkSapAlert == nil then VoidMarkDB.VoidMarkSapAlert = true end
+    return VoidMarkDB.VoidMarkSapAlert == true
+end
+
+local SAP_COMM_PREFIX = "VMSAP"
+
+local function SapAlertDistribution()
+    if IsInRaid and IsInRaid() then return "RAID" end
+    if IsInGroup and IsInGroup() then return "PARTY" end
+    return nil
+end
+
+local function ShowSapAlert(sourceName)
+    if not IsSapAlertEnabled() then return end
+    local now = GetTime()
+    if lastSapAlertAt and now - lastSapAlertAt < 2 then return end
+    lastSapAlertAt = now
+
+    local shortName = sourceName and VoidMarkForever.DisplayName(sourceName)
+    local groupMsg = shortName and ("{rt8} SAPPED BY "..shortName.." {rt8}") or "{rt8} SAPPED {rt8}"
+    local distribution = SapAlertDistribution()
+
+    -- The Sapped player does not get VoidMark's large local warning or sound.
+    -- Party/Raid chat still gets the human-readable callout.
+    if distribution and SendChatMessage then
+        SendChatMessage(groupMsg, distribution)
+    end
+
+    -- Separately notify other VoidMark users so their clients can produce the
+    -- stronger visual/audio reaction without creating another chat message.
+    if distribution and C_ChatInfo and C_ChatInfo.SendAddonMessage then
+        local myName = VoidMarkForever.API.UnitName("player") or "PARTY MEMBER"
+        C_ChatInfo.SendAddonMessage(SAP_COMM_PREFIX, "SAPPED|"..myName, distribution)
+    end
+end
+
+local function ShowRemoteSapAlert(playerName)
+    local shortName = playerName and VoidMarkForever.DisplayName(playerName) or "PARTY MEMBER"
+    local msg = "SAPPED  •  "..shortName
+
+    if RaidNotice_AddMessage and RaidWarningFrame then
+        RaidNotice_AddMessage(RaidWarningFrame, msg, ChatTypeInfo and ChatTypeInfo["RAID_WARNING"] or {r=1,g=0.2,b=0.2})
+    elseif UIErrorsFrame and UIErrorsFrame.AddMessage then
+        UIErrorsFrame:AddMessage(msg, 1.0, 0.18, 0.22, 1.0)
+    end
+
+    if PlaySound and SOUNDKIT and SOUNDKIT.RAID_WARNING then
+        PlaySound(SOUNDKIT.RAID_WARNING, "Master")
+    end
+end
+function GT:IsSapAlertEnabled()
+    return IsSapAlertEnabled()
+end
+
+function GT:SetSapAlertEnabled(enabled)
+    if VoidMarkDB then VoidMarkDB.VoidMarkSapAlert = enabled and true or false end
+end
+
+function GT:ToggleSapAlertEnabled()
+    self:SetSapAlertEnabled(not self:IsSapAlertEnabled())
+    return self:IsSapAlertEnabled()
+end
+
+local sapCommFrame = CreateFrame("Frame")
+if C_ChatInfo and C_ChatInfo.RegisterAddonMessagePrefix then
+    C_ChatInfo.RegisterAddonMessagePrefix(SAP_COMM_PREFIX)
+end
+VoidMarkForever.RegisterEvent(sapCommFrame,"CHAT_MSG_ADDON")
+sapCommFrame:SetScript("OnEvent", function(_, _, prefix, message, channel, sender)
+    if prefix ~= SAP_COMM_PREFIX or not IsSapAlertEnabled() then return end
+    if not VoidMarkForever.IsGroupSender(sender) then return end
+    if channel ~= "PARTY" and channel ~= "RAID" then return end
+    if type(message) ~= "string" or type(sender) ~= "string" then return end
+
+    local kind = message:match("^([^|]+)|?(.*)$")
+    if kind ~= "SAPPED" then return end
+
+    local myName, myRealm
+    if VoidMarkForever.API.UnitFullName then myName, myRealm = VoidMarkForever.API.UnitFullName("player") end
+    myName = myName or VoidMarkForever.API.UnitName("player")
+    myRealm = myRealm or (GetRealmName and GetRealmName())
+    local fullSelf = myName and myRealm and (myName.."-"..myRealm:gsub("%s", ""))
+    if sender == myName or sender == fullSelf then return end
+    local now = GetTime()
+    if recentRemoteSapAlerts[sender] and now-recentRemoteSapAlerts[sender] < 2 then return end
+    recentRemoteSapAlerts[sender] = now
+    -- The transport sender is the sapped party member; keep that identity.
+    ShowRemoteSapAlert(sender)
+end)
+
+local function PanicPlayerLevel()
+    local level = VoidMarkForever.API.UnitLevel and tonumber(VoidMarkForever.API.UnitLevel("player")) or nil
+    if not level or level < 1 then return 60 end
+    return math.min(60, level)
+end
 
 local LEVEL_BUCKET_ORDER = {"1-9", "10-20", "21-30", "31-40", "41-50", "51-59", "60"}
 GT.levelKillBuckets = GT.levelKillBuckets or {
@@ -165,25 +329,7 @@ end
 
 local function BasePlayerName(name)
     local s = tostring(name or "?")
-    if VoidMarkForever and VoidMarkForever.IsForever then
-        return s
-    end
-    return s:match("^([^-]+)") or s
-end
-
-local function DisplayPlayerName(name)
-    if VoidMarkForever and VoidMarkForever.DisplayName then
-        return VoidMarkForever.DisplayName(name)
-    end
-    return BasePlayerName(name)
-end
-
-local function CurrentPlayerIdentity()
-    if VoidMark and VoidMark.PlayerName then
-        local ok, full = pcall(VoidMark.PlayerName, VoidMark, "player")
-        if ok and type(full) == "string" and full ~= "" then return full end
-    end
-    return tostring(UnitName("player") or "")
+    return s
 end
 
 local function NormalizedPlayerName(name)
@@ -204,8 +350,8 @@ local WEEKLY_RESET_HOUR = 8
 local DailyHistory
 
 local levelLookup = {
-    voidmarkFull = {},
-    voidmarkBase = {},
+    spyFull = {},
+    spyBase = {},
     repoFull = {},
     repoBase = {},
     repoGUID = {},
@@ -230,7 +376,7 @@ local function RebuildLevelLookup(force)
         return
     end
 
-    local voidmarkFull, voidmarkBase = {}, {}
+    local spyFull, spyBase = {}, {}
     local repoFull, repoBase, repoGUID = {}, {}, {}
 
     -- Build the VoidMark lookup ONCE per stats refresh. The previous version scanned
@@ -242,15 +388,15 @@ local function RebuildLevelLookup(force)
             if type(data) == "table" then
                 local full = string.lower(tostring(key or ""))
                 if full ~= "" then
-                    voidmarkFull[full] = data
+                    spyFull[full] = data
                 end
 
                 local base = NormalizedPlayerName(key)
                 if base ~= "" then
-                    if voidmarkBase[base] == nil then
-                        voidmarkBase[base] = data
-                    elseif voidmarkBase[base] ~= data then
-                        voidmarkBase[base] = false -- ambiguous base name
+                    if spyBase[base] == nil then
+                        spyBase[base] = data
+                    elseif spyBase[base] ~= data then
+                        spyBase[base] = false -- ambiguous base name
                     end
                 end
             end
@@ -283,8 +429,8 @@ local function RebuildLevelLookup(force)
         end
     end
 
-    levelLookup.voidmarkFull = voidmarkFull
-    levelLookup.voidmarkBase = voidmarkBase
+    levelLookup.spyFull = spyFull
+    levelLookup.spyBase = spyBase
     levelLookup.repoFull = repoFull
     levelLookup.repoBase = repoBase
     levelLookup.repoGUID = repoGUID
@@ -294,11 +440,11 @@ end
 
 local function FindPlayerDataForName(playerName)
     local full = string.lower(tostring(playerName or ""))
-    local data = levelLookup.voidmarkFull[full]
+    local data = levelLookup.spyFull[full]
     if data then return data end
 
     local base = NormalizedPlayerName(playerName)
-    data = levelLookup.voidmarkBase[base]
+    data = levelLookup.spyBase[base]
     if data and data ~= false then
         return data
     end
@@ -310,6 +456,28 @@ local function FindPlayerDataForName(playerName)
     end
 
     return nil
+end
+
+local function SyncVoidMarkLifetimeRecord(playerName, playerGUID, historicalKills)
+    local total = tonumber(historicalKills) or 0
+    if total <= 0 then return end
+
+    local data = FindPlayerDataForName(playerName)
+    if data then
+        -- PlayerData.wins is now only a presentation cache. The repository
+        -- already folds in preserved legacy wins/floors, so mirroring the
+        -- canonical total prevents the old VoidMark kill counter from double-counting
+        -- the same real death.
+        data.wins = total
+        if playerGUID and tostring(playerGUID) ~= "" and not data.guid then
+            data.guid = playerGUID
+        end
+    end
+
+    -- Repaint VoidMark outside combat so the W/L value changes immediately.
+    if VoidMark and VoidMark.RefreshCurrentList and not (InCombatLockdown and InCombatLockdown()) then
+        VoidMark:RefreshCurrentList()
+    end
 end
 
 local function ResolveKnownLevel(playerName, playerGUID, storedLevel)
@@ -388,6 +556,109 @@ local function WeeklyResetStart(now)
     return resetStart
 end
 
+
+-- Player death history -------------------------------------------------------
+-- Keep a tiny timestamp log for K/D display.  This is intentionally separate
+-- from kill history so player deaths do not affect marks, streak credit, or
+-- repository sync semantics.
+local function EnsurePlayerDeathHistory()
+    if not VoidMarkDB then return nil end
+    VoidMarkDB.TaliaaGankPlayerDeaths = VoidMarkDB.TaliaaGankPlayerDeaths or { events = {} }
+    local db = VoidMarkDB.TaliaaGankPlayerDeaths
+    db.events = db.events or {}
+    return db
+end
+
+local function RecordPlayerDeathTimestamp()
+    local db = EnsurePlayerDeathHistory()
+    if not db then return end
+    local now = DailyNow()
+    local events = db.events
+
+    -- PLAYER_DEAD should only fire once per death, but keep a small guard so a
+    -- client quirk/reload cannot add the same death twice.
+    local last = events[#events]
+    if last and math.abs(now - (tonumber(last.t) or 0)) < 3 then return end
+
+    events[#events + 1] = { t = now }
+
+    -- K/D only needs current/nearby history.  Trim anything older than roughly
+    -- two weekly windows so this list stays permanently tiny.
+    local cutoff = now - (15 * 86400)
+    while #events > 0 and (tonumber(events[1] and events[1].t) or 0) < cutoff do
+        table.remove(events, 1)
+    end
+end
+
+local function PlayerDeathsInRange(startTime, endTime)
+    local db = EnsurePlayerDeathHistory()
+    if not db then return 0 end
+    startTime = tonumber(startTime) or 0
+    endTime = tonumber(endTime) or math.huge
+    local total = 0
+    for _, event in ipairs(db.events or {}) do
+        local t = tonumber(event and event.t) or 0
+        if t >= startTime and t <= endTime then
+            total = total + 1
+        end
+    end
+    return total
+end
+
+local function PlayerDeathsToday()
+    local now = DailyNow()
+    return PlayerDeathsInRange(DailyRealmDayStart(now), now + 60)
+end
+
+local function PlayerDeathsWeekly()
+    local now = DailyNow()
+    return PlayerDeathsInRange(WeeklyResetStart(now), now + 60)
+end
+
+local function KDRatioText(kills, deaths)
+    kills = tonumber(kills) or 0
+    deaths = tonumber(deaths) or 0
+    if deaths <= 0 then
+        return kills > 0 and "INF" or "0.00"
+    end
+    return string.format("%.2f", kills / deaths)
+end
+
+local function HunterPetKillsInRange(startTime, endTime)
+    local db = EnsureHunterPetStats()
+    local events = db.events or {}
+    local total = 0
+    startTime = tonumber(startTime) or 0
+    endTime = tonumber(endTime) or math.huge
+    for _, event in ipairs(events) do
+        local t = tonumber(event and event.t) or 0
+        if t >= startTime and t <= endTime then
+            total = total + 1
+        end
+    end
+    return total
+end
+
+local function HunterPetKillToday()
+    local now = DailyNow()
+    return HunterPetKillsInRange(DailyRealmDayStart(now), now + 60)
+end
+
+local function HunterPetKillWeekly()
+    local now = DailyNow()
+    local weekStart = WeeklyResetStart(now)
+
+    -- Weekly is strictly timestamp-based. Older lifetime-only pet records cannot
+    -- be assigned to a week without inventing a date. Lifetime remains intact in
+    -- db.total, while current Today/Week counts use only known timestamps.
+    local db = EnsureHunterPetStats()
+    db.legacyWeeklyCarry = nil
+    db.legacyWeeklyCarryWeekStart = nil
+    db.legacyWeeklyMigrationDone = true
+
+    return HunterPetKillsInRange(weekStart, now + 60)
+end
+
 local recordStatsCache = {
     eventCount = -1,
     stats = nil,
@@ -398,6 +669,7 @@ local recordStatsCache = {
 -- boundary changes, so never rescan thousands of historical rows every tick.
 local weeklyStatsCache = {
     eventCount = -1,
+    lastEventTime = -1,
     weekStart = nil,
     stats = nil,
 }
@@ -412,7 +684,13 @@ local function BuildRecordStats()
     local history = DailyHistory()
     local eventCount = history and tonumber(history.eventCount) or 0
 
-    if recordStatsCache.stats and recordStatsCache.eventCount == eventCount then
+    local now = DailyNow()
+    local currentWeekStart = WeeklyResetStart(now)
+    local lastEventTime = history and tonumber(history.lastEventTime) or 0
+    if recordStatsCache.stats and recordStatsCache.eventCount == eventCount
+        and recordStatsCache.history == history
+        and recordStatsCache.lastEventTime == lastEventTime
+        and recordStatsCache.weekStart == currentWeekStart then
         return recordStatsCache.stats, true
     end
 
@@ -437,8 +715,6 @@ local function BuildRecordStats()
     end
     stats.repeats = math.max(0, stats.total - stats.marks)
 
-    local now = DailyNow()
-    local currentWeekStart = WeeklyResetStart(now)
     local WEEK = 7 * 86400
     local events = TaliaaGankRepository:GetEventsInRange(1, now + 60)
     local weeklyCounts = {}
@@ -474,6 +750,9 @@ local function BuildRecordStats()
     end
 
     recordStatsCache.eventCount = eventCount
+    recordStatsCache.history = history
+    recordStatsCache.lastEventTime = lastEventTime
+    recordStatsCache.weekStart = currentWeekStart
     recordStatsCache.stats = stats
     return stats, true
 end
@@ -495,8 +774,10 @@ local function BuildWeeklyStats()
 
     local history = DailyHistory and DailyHistory() or nil
     local eventCount = history and (tonumber(history.eventCount) or 0) or 0
+    local lastEventTime = history and (tonumber(history.lastEventTime) or 0) or 0
     if weeklyStatsCache.stats
         and weeklyStatsCache.eventCount == eventCount
+        and weeklyStatsCache.lastEventTime == lastEventTime
         and weeklyStatsCache.weekStart == weekStart then
         return weeklyStatsCache.stats, true
     end
@@ -595,6 +876,7 @@ local function BuildWeeklyStats()
     stats.incomplete = (fileMerged > 0 and repoTotal > 0 and fileMerged > repoTotal)
 
     weeklyStatsCache.eventCount = eventCount
+    weeklyStatsCache.lastEventTime = lastEventTime
     weeklyStatsCache.weekStart = weekStart
     weeklyStatsCache.stats = stats
     return stats, true
@@ -604,7 +886,7 @@ local function DailyFaction()
     if VoidMark and VoidMark.FactionName and VoidMark.FactionName ~= "" then
         return VoidMark.FactionName
     end
-    return UnitFactionGroup("player") or "Unknown"
+    return VoidMarkForever.API.UnitFactionGroup("player") or "Unknown"
 end
 
 DailyHistory = function()
@@ -617,7 +899,7 @@ end
 -- 08:00-to-08:00 hunt window. /reload, relogging and zoning do not erase it,
 -- but crossing the daily 08:00 realm reset automatically starts a new session.
 local function SessionKey()
-    return tostring(UnitName("player") or "?") .. "-" .. tostring(GetRealmName and GetRealmName() or "?")
+    return tostring(VoidMarkForever.API.UnitName("player") or "?") .. "-" .. tostring(GetRealmName and GetRealmName() or "?")
 end
 
 local function EnsureSessionStats()
@@ -643,6 +925,11 @@ local function EnsureSessionStats()
         dhkCount = 0,
     }
     local session = VoidMarkDB.TaliaaGankSessions[key]
+
+    -- Preserve the live streak across /reload. SavedVariables are only flushed to
+    -- disk on logout/reload, so snapshot the current runtime streak before the
+    -- reload tears the UI down. This does not reconstruct or alter kill history.
+    GT._sessionKey = key
 
     -- Old builds let Session continue forever until a manual reset. If the saved
     -- session began before the active 08:00 window, roll it forward now. Seed it
@@ -678,6 +965,17 @@ local function EnsureSessionStats()
     return session
 end
 
+local streakSaveFrame = CreateFrame("Frame")
+VoidMarkForever.RegisterEvent(streakSaveFrame,"PLAYER_LOGOUT")
+streakSaveFrame:SetScript("OnEvent", function()
+    if not VoidMarkDB or not VoidMarkDB.TaliaaGankSessions then return end
+    local key = GT._sessionKey or SessionKey()
+    local session = VoidMarkDB.TaliaaGankSessions[key]
+    if not session then return end
+    session.streak = math.max(0, tonumber(GT.currentStreak) or tonumber(session.streak) or 0)
+    session.bestStreak = math.max(tonumber(session.bestStreak) or 0, tonumber(GT.bestStreak) or 0, session.streak)
+end)
+
 local function SeedSessionFromHistory()
     local session = EnsureSessionStats()
     if not session then return false end
@@ -694,16 +992,13 @@ local function SeedSessionFromHistory()
     local history = DailyHistory()
     if not history or type(history.events) ~= "table" then return false end
 
-    local me = string.lower(CurrentPlayerIdentity())
+    local me = string.lower(tostring(VoidMarkForever.API.UnitName("player") or ""))
     local startAt = tonumber(session.startedAt) or DailyRealmDayStart(DailyNow())
     local count = 0
     local victims = {}
 
     for _, event in pairs(history.events) do
         local killer = string.lower(tostring(event and event.killer or ""))
-        if not (VoidMarkForever and VoidMarkForever.IsForever) then
-            killer = killer:match("^([^-]+)") or killer
-        end
         local t = tonumber(event and event.t) or 0
         if killer == me and t >= startAt then
             count = count + 1
@@ -794,6 +1089,22 @@ local function RefreshDailyStats()
 
     local history = DailyHistory()
     if not history or type(history.events) ~= "table" then
+        -- Never leave yesterday's in-memory totals visible when the repository
+        -- is temporarily unavailable during login/reload.
+        GT.totalKills = 0
+        GT.uniqueKills = 0
+        GT.daily60Kills = 0
+        GT.dailyNoobKills = 0
+        GT.dailyUnknownLevelKills = 0
+        GT.victims = {}
+        GT.levelKillBuckets = {}
+        GT.sessionKills = 0
+        GT.sessionVictims = {}
+        GT.lastKillName = nil
+        GT.lastKillGUID = nil
+        GT.lastKillLevel = nil
+        GT.lastKillLocation = nil
+        GT.lastKillHistorical = 0
         return false
     end
 
@@ -1152,7 +1463,7 @@ local function RecordDishonorableKill(message)
     -- The Blizzard stat can update a fraction of a second after the message.
     -- Reconcile shortly afterward so even a missed/filtered chat event is repaired.
     if C_Timer and C_Timer.After then
-        C_Timer.After(1.0, function()
+        C_Timer.After(5.0, function()
             local fixed = ReconcileCurrentCharacterDHKs(true)
             if fixed > 0 then UpdateDisplay() end
         end)
@@ -1473,6 +1784,41 @@ local function GetHuntViewMode()
     return mode
 end
 
+function GT:RefreshVoidMarkCompact()
+    local main = VoidMark and VoidMark.MainWindow
+    if not main then return end
+
+    local left = main.VoidMarkGTCompactTextLeft or main.VoidMarkGTCompactText
+    local right = main.VoidMarkGTCompactTextRight
+    if not left and not right then return end
+
+    local kills = tonumber(GT.totalKills) or 0
+    local unique = tonumber(GT.uniqueKills) or 0
+    local repeats = math.max(0, kills - unique)
+    local dhkToday = 0
+    if GetDHKCounts then
+        dhkToday = tonumber((select(1, GetDHKCounts()))) or 0
+    end
+    local streak = tonumber(GT.currentStreak) or 0
+
+    local leftText = "K " .. tostring(kills)
+        .. "   U " .. tostring(unique)
+        .. "   R " .. tostring(repeats)
+    local rightText = "DK " .. tostring(dhkToday)
+        .. "   K/S " .. tostring(streak)
+
+    if left then
+        left:SetText(leftText)
+    end
+    if right then
+        right:SetText(rightText)
+    elseif left then
+        left:SetText(leftText .. "   " .. rightText)
+    end
+end
+
+local RestorePanicVisibility
+
 UpdateDisplay = function()
     -- Nothing in the full tracker repaint is combat-critical. Weekly/repository
     -- totals can touch thousands of rows when their cache invalidates, so any
@@ -1492,7 +1838,7 @@ UpdateDisplay = function()
     if not GT.Frame then return end
 
     local duplicates = math.max(0, (GT.totalKills or 0) - (GT.uniqueKills or 0))
-    local recent60 = GT:GetRecentEnemyCount(PANIC_WINDOW_SECONDS)
+    local recentThreats = GT:GetRecentEnemyCount(PANIC_WINDOW_SECONDS)
     local huntView = GetHuntViewMode()
     local weeklyViewStats = nil
     local recordViewStats = nil
@@ -1552,9 +1898,22 @@ UpdateDisplay = function()
             if GT.Frame.DupeValue.Caption then GT.Frame.DupeValue.Caption:SetText("REPEATS") end
         end
         if GT.Frame.NearbyValue then
-            GT.Frame.NearbyValue:SetText(tostring(recent60))
-            if GT.Frame.NearbyValue.Caption then GT.Frame.NearbyValue.Caption:SetText("60s / 30s") end
+            GT.Frame.NearbyValue:SetText(tostring(recentThreats))
+            if GT.Frame.NearbyValue.Caption then GT.Frame.NearbyValue.Caption:SetText("THR/30") end
         end
+    end
+
+    -- Hunter-pet kills are kept as a separate lifetime counter and never affect
+    -- player-kill totals, marks, repeats, streaks, or level buckets.
+    if GT.Frame.PetValue then
+        local petCount = HunterPetKillToday()
+        if huntView == "weekly" then
+            petCount = HunterPetKillWeekly()
+        elseif huntView == "records" then
+            petCount = HunterPetKillTotal()
+        end
+        GT.Frame.PetValue:SetText(tostring(petCount))
+        if GT.Frame.PetValue.Caption then GT.Frame.PetValue.Caption:SetText("PETS") end
     end
 
     if GT.Frame.Subtitle then
@@ -1590,6 +1949,7 @@ UpdateDisplay = function()
             GT.Frame.LastLocation:SetText(
                 "Lifetime " .. tostring(recordViewStats.total or 0)
                 .. " kills  •  " .. tostring(recordViewStats.marks or 0) .. " marks"
+                .. "  •  Hunter pets " .. tostring(HunterPetKillTotal())
             )
         end
     elseif GT.lastKillName then
@@ -1652,24 +2012,28 @@ UpdateDisplay = function()
             GT.Frame.RepoText:SetText(
                 "LIFE " .. tostring(total)
                 .. "  •  WEEK " .. weekLabel
-                .. "  •  SESS " .. tostring(GT.sessionKills or 0)
+                .. "  •  SESSION " .. tostring(GT.sessionKills or 0)
             )
             if GT.Frame.CombatText then
+                local todayKills = tonumber(GT.totalKills) or 0
+                local todayDeaths = PlayerDeathsToday()
+                local weekKills = tonumber(weeklyTotal) or 0
+                local weekDeaths = PlayerDeathsWeekly()
                 GT.Frame.CombatText:SetText(
-                    "STREAK " .. tostring(GT.currentStreak or 0) .. "/" .. tostring(GT.bestStreak or 0)
-                    .. "  •  DHK T" .. tostring(dhkToday)
-                    .. " W" .. tostring(dhkWeekly)
-                    .. " L" .. tostring(dhkLifetime)
+                    "K/D TODAY " .. tostring(todayKills) .. "-" .. tostring(todayDeaths)
+                    .. " (" .. KDRatioText(todayKills, todayDeaths) .. ")"
+                    .. "  •  WEEK " .. tostring(weekKills) .. "-" .. tostring(weekDeaths)
+                    .. " (" .. KDRatioText(weekKills, weekDeaths) .. ")"
                 )
             end
         else
             GT.Frame.RepoText:SetText("LIFE repository offline")
             if GT.Frame.CombatText then
+                local todayKills = tonumber(GT.totalKills) or 0
+                local todayDeaths = PlayerDeathsToday()
                 GT.Frame.CombatText:SetText(
-                    "STREAK " .. tostring(GT.currentStreak or 0) .. "/" .. tostring(GT.bestStreak or 0)
-                    .. "  •  DHK T" .. tostring(dhkToday)
-                    .. " W" .. tostring(dhkWeekly)
-                    .. " L" .. tostring(dhkLifetime)
+                    "K/D TODAY " .. tostring(todayKills) .. "-" .. tostring(todayDeaths)
+                    .. " (" .. KDRatioText(todayKills, todayDeaths) .. ")"
                 )
             end
         end
@@ -1678,7 +2042,10 @@ UpdateDisplay = function()
     if GT.Frame.RevengeText then
         local revengeCount, newest = RevengeCountAndNewest()
         if revengeCount > 0 and newest then
-            GT.Frame.RevengeText:SetText("REVENGE " .. tostring(revengeCount) .. "  •  " .. tostring(newest.name or "?"))
+            local revengeName = tostring(newest.name or "?")
+            -- Keep this bottom status row single-line even with realm-qualified names.
+            if #revengeName > 18 then revengeName = revengeName:sub(1, 15) .. "..." end
+            GT.Frame.RevengeText:SetText("REVENGE " .. tostring(revengeCount) .. "  •  " .. revengeName)
             GT.Frame.RevengeText:SetTextColor(1.00, 0.32, 0.45, 1)
         else
             GT.Frame.RevengeText:SetText("REVENGE none")
@@ -1687,46 +2054,8 @@ UpdateDisplay = function()
     end
 
     if GT.Frame.SyncText then
-        local parts = {}
-
-        if TaliaaGankRepository and TaliaaGankRepository.GetSyncStatus then
-            local status = TaliaaGankRepository:GetSyncStatus()
-            if status.paired then
-                local live = "LIVE ● " .. BasePlayerName(status.peerName or status.peerID or "peer")
-                local lastRx = (tonumber(status.lastReceive) or 0) > 0 and status.lastReceive or status.lastPeerSeen
-                local age = FormatAge(lastRx)
-                if age then live = live .. " " .. age end
-                parts[#parts + 1] = live
-            elseif status.pairing then
-                parts[#parts + 1] = "LIVE ◐ pairing"
-            else
-                parts[#parts + 1] = "LIVE ○ offline"
-            end
-        else
-            parts[#parts + 1] = "LIVE ?"
-        end
-
-        local marker = VoidMarkDB and VoidMarkDB.TaliaaGankOfflineSync
-        if type(marker) == "table" and tonumber(marker.t) then
-            local fileAge = FormatAge(marker.t)
-            local fileText = "FILE " .. tostring(fileAge or "?")
-            local merged = tonumber(marker.merged)
-            if merged then
-                fileText = fileText .. " " .. tostring(merged)
-                local loaded = 0
-                if TaliaaGankRepository and TaliaaGankRepository.GetStats then
-                    loaded = tonumber((select(1, TaliaaGankRepository:GetStats()))) or 0
-                end
-                if loaded > 0 and merged > loaded then
-                    fileText = fileText .. " > LIFE " .. tostring(loaded)
-                end
-            end
-            parts[#parts + 1] = fileText
-        else
-            parts[#parts + 1] = "FILE --"
-        end
-
-        GT.Frame.SyncText:SetText(table.concat(parts, "  •  "))
+        GT.Frame.SyncText:SetText("")
+        GT.Frame.SyncText:Hide()
     end
 
     if GT.Frame.CompactText then
@@ -1792,8 +2121,11 @@ UpdateDisplay = function()
         end
     end
 
-    if UpdatePanicDisplay then
-        UpdatePanicDisplay(recent60)
+    GT:RefreshVoidMarkCompact()
+
+    RestorePanicVisibility()
+    if UpdatePanicDisplay and GT.PanicFrame and GT.PanicFrame:IsShown() then
+        UpdatePanicDisplay(recentThreats)
     end
 end
 
@@ -1818,37 +2150,74 @@ local function CurrentLocation()
 end
 
 UpdatePanicDisplay = function(forcedCount)
+    if GT.RefreshPanicArt then
+        GT:RefreshPanicArt(false, forcedCount)
+        return
+    end
+
     local pf = GT.PanicFrame
     local button = pf and pf.Button
     local label = button and button.Label
     if not label then return end
 
-    local recent60 = forcedCount
-    if recent60 == nil then
-        recent60 = GT:GetRecentEnemyCount(PANIC_WINDOW_SECONDS)
+    local count = forcedCount
+    if count == nil then
+        count = GT:GetRecentEnemyCount(PANIC_WINDOW_SECONDS)
     end
+    count = tonumber(count) or 0
 
-    label:SetText("PANIC  •  " .. tostring(recent60 or 0))
-    if recent60 and recent60 >= 3 then
-        button:SetBackdropColor(0.50, 0.025, 0.045, 0.98)
-        label:SetTextColor(1.0, 0.92, 0.92, 1)
-    elseif recent60 and recent60 >= 1 then
-        button:SetBackdropColor(0.34, 0.025, 0.070, 0.98)
-        label:SetTextColor(1.0, 0.58, 0.68, 1)
+    local style = "banner"
+    style = "banner"
+    if style == "banner" then
+        label:SetText("PANIC   " .. tostring(count) .. " THREAT" .. (count == 1 and "" or "S"))
+    elseif style == "ring" then
+        label:SetText("PANIC  " .. tostring(count))
     else
-        button:SetBackdropColor(0.16, 0.020, 0.040, 0.96)
-        label:SetTextColor(0.78, 0.46, 0.56, 1)
+        label:SetText("PANIC\n" .. tostring(count))
     end
-end
 
+    local br, bg, bb, lr, lg, lb, ar, ag, ab
+    if count >= 6 then
+        br,bg,bb = 1.00,0.16,0.12
+        lr,lg,lb = 1.00,0.94,0.92
+        ar,ag,ab = 1.00,0.12,0.08
+        button:SetBackdropColor(0.58, 0.010, 0.025, 0.99)
+    elseif count >= 3 then
+        br,bg,bb = 0.95,0.12,0.18
+        lr,lg,lb = 1.00,0.82,0.82
+        ar,ag,ab = 0.95,0.10,0.18
+        button:SetBackdropColor(0.46, 0.020, 0.045, 0.99)
+    elseif count >= 1 then
+        br,bg,bb = 0.78,0.16,0.32
+        lr,lg,lb = 1.00,0.58,0.68
+        ar,ag,ab = 0.78,0.16,0.32
+        button:SetBackdropColor(0.28, 0.025, 0.070, 0.98)
+    else
+        br,bg,bb = 0.48,0.20,0.68
+        lr,lg,lb = 0.82,0.60,0.96
+        ar,ag,ab = 0.56,0.20,0.82
+        button:SetBackdropColor(0.075, 0.025, 0.11, 0.97)
+    end
+
+    button:SetBackdropBorderColor(br,bg,bb,1)
+    label:SetTextColor(lr,lg,lb,1)
+    if button.Accent then button.Accent:SetVertexColor(ar,ag,ab,1) end
+    if button.StyleDiamond then button.StyleDiamond:SetVertexColor(ar*0.34,ag*0.34,ab*0.34,0.96) end
+    if button.StyleRing then button.StyleRing:SetVertexColor(br,bg,bb,1) end
+    if button.StyleRingGlow then button.StyleRingGlow:SetVertexColor(ar,ag,ab,1) end
+    if button.BannerLeft then button.BannerLeft:SetVertexColor(ar*0.55,ag*0.55,ab*0.55,1) end
+    if button.BannerRight then button.BannerRight:SetVertexColor(ar*0.55,ag*0.55,ab*0.55,1) end
+    if button.VoidGlow then button.VoidGlow:SetVertexColor(ar,ag,ab,1) end
+end
 function GT:NoteEnemySeen(playerName, timestamp, source)
     if not playerName or playerName == "" then
         return
     end
 
     -- Only count enemies detected by this client.
-    -- Ignore detections received from another VoidMark user.
-    if source and source ~= VoidMark.CharacterName then
+    -- Ignore detections received from another VoidMark user. Some local detection
+    -- paths omit a source entirely, so nil remains a valid local observation.
+    if source and VoidMark and VoidMark.CharacterName and source ~= VoidMark.CharacterName then
         return
     end
 
@@ -1862,17 +2231,19 @@ function GT:NoteEnemySeen(playerName, timestamp, source)
     if UpdatePanicDisplay then UpdatePanicDisplay() end
 end
 
-function GT:GetRecentEnemyCount(seconds)
-    local window = seconds or 30
+function GT:GetPanicThreats(seconds)
+    local window = tonumber(seconds) or PANIC_WINDOW_SECONDS
     local cutoff = time() - window
-    local count = 0
+    local playerLevel = PanicPlayerLevel()
+    local minimumRelevantLevel = math.max(1, playerLevel - PANIC_LEVEL_MARGIN)
+    local threats = {}
 
-    for playerName, data in pairs(self.seenEnemies) do
+    for playerName, data in pairs(self.seenEnemies or {}) do
         local seenAt
         local level
 
         if type(data) == "table" then
-            seenAt = data.seenAt
+            seenAt = tonumber(data.seenAt)
             level = tonumber(data.level)
 
             if not level then
@@ -1881,21 +2252,45 @@ function GT:GetRecentEnemyCount(seconds)
                 data.level = level
             end
         else
-            seenAt = data
+            seenAt = tonumber(data)
             local seenData = FindPlayerDataForName(playerName)
             level = seenData and tonumber(seenData.level) or nil
         end
 
         if seenAt and seenAt >= cutoff then
-            if level and level == PANIC_LEVEL then
-                count = count + 1
+            -- Classic reports a player 10+ levels above you as a skull/??.
+            -- Some detection paths expose no level at all. Keep those as an
+            -- explicit unknown (?) rather than falsely labeling them skull/??.
+            local skull = level ~= nil and level < 0
+            local unknown = level == nil or level == 0
+            if skull or unknown or level >= minimumRelevantLevel then
+                threats[#threats + 1] = {
+                    name = playerName,
+                    level = (skull or unknown) and nil or level,
+                    skull = skull,
+                    unknown = unknown,
+                }
             end
         else
             self.seenEnemies[playerName] = nil
         end
     end
 
-    return count
+    table.sort(threats, function(a, b)
+        if a.skull ~= b.skull then return a.skull end
+        if a.skull then return tostring(a.name or "") < tostring(b.name or "") end
+        if a.unknown ~= b.unknown then return not a.unknown end
+        local aLevel = tonumber(a.level) or 0
+        local bLevel = tonumber(b.level) or 0
+        if aLevel ~= bLevel then return aLevel > bLevel end
+        return tostring(a.name or "") < tostring(b.name or "")
+    end)
+
+    return threats
+end
+
+function GT:GetRecentEnemyCount(seconds)
+    return #self:GetPanicThreats(seconds)
 end
 
 local function FormatLevelBreakdownLines(buckets, unknown)
@@ -1928,7 +2323,8 @@ local function BuildRecordReportLines()
 
     return {
         "VOIDMARK RECORDS — " .. tostring(stats.total or 0) .. " lifetime kills"
-            .. "  •  " .. tostring(stats.marks or 0) .. " unique marks",
+            .. "  •  " .. tostring(stats.marks or 0) .. " unique marks"
+            .. "  •  Hunter pets " .. tostring(HunterPetKillTotal()),
         "BEST WEEK — " .. tostring(stats.bestWeek or 0) .. " kills"
             .. "  •  " .. ShortDate(stats.bestWeekStart)
             .. " – " .. ShortDate((stats.bestWeekEnd or 0) - 1)
@@ -1946,10 +2342,13 @@ local function BuildDailyReportLines()
 
     local lines = {
         string.format(
-            "TODAY {star}%d kills  •  Unique %d  •  Repeat %d  •  DHK %d",
-            total, unique, repeats, tonumber(dhkToday) or 0
+            "TODAY {star}%d kills  •  Unique %d  •  Repeat %d  •  DHK %d  •  Hunter pets %d",
+            total, unique, repeats, tonumber(dhkToday) or 0, HunterPetKillToday()
         ),
     }
+
+    lines[#lines + 1] = "KILL STREAK " .. tostring(GT.currentStreak or 0)
+        .. "  •  Best this session " .. tostring(GT.bestStreak or 0)
 
     local settings = EnsureReportSettings()
     if settings.reportStyle == "levels" then
@@ -1971,11 +2370,12 @@ local function BuildWeeklyReportLines()
     local dhkWeekly = select(2, GetDHKCounts()) or 0
     local lines = {
         string.format(
-            "WEEK {star}%d kills  •  Unique %d  •  Repeat %d  •  DHK %d",
+            "WEEK {star}%d kills  •  Unique %d  •  Repeat %d  •  DHK %d  •  Hunter pets %d",
             tonumber(stats.total) or 0,
             tonumber(stats.unique) or 0,
             tonumber(stats.repeats) or 0,
-            tonumber(dhkWeekly) or 0
+            tonumber(dhkWeekly) or 0,
+            HunterPetKillWeekly()
         ),
     }
 
@@ -2098,20 +2498,64 @@ function GT:ReportCurrentHunt()
 end
 
 local function PanicLocation()
-    local subZone = GetSubZoneText() or ""
+    local subZone = GetSubZoneText and (GetSubZoneText() or "") or ""
     if subZone ~= "" then return subZone end
-    return GetZoneText() or "Unknown"
+    local zone = GetZoneText and (GetZoneText() or "") or ""
+    if zone ~= "" then return zone end
+    return "Unknown"
+end
+
+local function PanicCoordinates()
+    if not C_Map or not C_Map.GetBestMapForUnit or not C_Map.GetPlayerMapPosition then
+        return "??,??"
+    end
+
+    local okMap, mapID = pcall(C_Map.GetBestMapForUnit, "player")
+    if not okMap or not mapID then return "??,??" end
+
+    local okPos, pos = pcall(C_Map.GetPlayerMapPosition, mapID, "player")
+    if not okPos or not pos or not pos.GetXY then return "??,??" end
+
+    local okXY, x, y = pcall(pos.GetXY, pos)
+    if not okXY or not x or not y or (x == 0 and y == 0) then
+        return "??,??"
+    end
+
+    return string.format("%02d,%02d", math.floor((x * 100) + 0.5), math.floor((y * 100) + 0.5))
+end
+
+local function PanicThreatLevelList(threats)
+    local levels = {}
+    for _, threat in ipairs(threats or {}) do
+        if threat.skull then
+            levels[#levels + 1] = "??"
+        elseif threat.unknown then
+            levels[#levels + 1] = "?"
+        else
+            levels[#levels + 1] = tostring(tonumber(threat.level) or "?")
+        end
+    end
+    return table.concat(levels, ", ")
 end
 
 function GT:Panic()
-    local nearby = self:GetRecentEnemyCount(PANIC_WINDOW_SECONDS)
+    local threats = self:GetPanicThreats(PANIC_WINDOW_SECONDS)
     local location = PanicLocation()
+    local coords = PanicCoordinates()
+    local count = #threats
     local message
 
-    if nearby and nearby > 0 then
-        message = string.format("HELP! %s - %dx 60 nearby!", location, nearby)
+    if count > 0 then
+        message = string.format(
+            "PANIC {skull} %d THREAT%s [%s] {skull} %s (%s)",
+            count,
+            count == 1 and "" or "S",
+            PanicThreatLevelList(threats),
+            location,
+            coords
+        )
     else
-        message = string.format("HELP! %s!", location)
+        message = string.format("PANIC {skull} NEED HELP {skull} %s (%s)", location, coords)
     end
 
     SafeGroupMessage(message)
@@ -2184,24 +2628,44 @@ end
 
 local function GetTodayVictimKillCount(playerName, playerGUID)
     local history = DailyHistory()
-    if not history or type(history.events) ~= "table" then
+    if not history then
         return GetVictimKillCount(playerName)
     end
 
     local now = DailyNow()
     local dayStart = DailyRealmDayStart(now)
-    local count = 0
+    local victim = nil
+    local guid = tostring(playerGUID or "")
 
-    for _, event in pairs(history.events) do
-        if type(event) == "table" then
-            local eventTime = tonumber(event.t) or 0
-            if eventTime >= dayStart and eventTime <= (now + 60)
-                and SameVictimIdentity(event.name, event.guid, playerName, playerGUID) then
-                count = count + 1
+    -- Repository victim.events is the deduped canonical per-victim event index.
+    -- Do not count raw history.events here: older/synced duplicate rows can remain
+    -- in that ledger temporarily even though victim.kills correctly represents one
+    -- physical death.
+    if IsPlayerGUID(guid) and type(history.victims) == "table" then
+        victim = history.victims["G:" .. guid]
+    end
+
+    if not victim and type(history.victims) == "table" then
+        for _, candidate in pairs(history.victims) do
+            if type(candidate) == "table"
+                and SameVictimIdentity(candidate.name, candidate.guid, playerName, playerGUID) then
+                victim = candidate
+                break
             end
         end
     end
 
+    if type(victim) ~= "table" or type(victim.events) ~= "table" then
+        return 0
+    end
+
+    local count = 0
+    for _, stamp in pairs(victim.events) do
+        local eventTime = tonumber(stamp) or 0
+        if eventTime >= dayStart and eventTime <= (now + 60) then
+            count = count + 1
+        end
+    end
     return count
 end
 
@@ -2233,6 +2697,11 @@ local function FindTodayVictim(playerName, playerGUID)
     end
     if matches == 1 then return foundName, foundVictim end
     return playerName, nil
+end
+
+local function GetCurrentTodayCount(playerName, playerGUID)
+    local _, victim = FindTodayVictim(playerName, playerGUID)
+    return victim and (tonumber(victim.kills) or 0) or 0
 end
 
 local function ApplyLocalKillToDailyStats(playerName, playerGUID, playerLevel, zone, subZone, location, historicalKills)
@@ -2289,8 +2758,167 @@ local function ApplyLocalKillToDailyStats(playerName, playerGUID, playerLevel, z
     return victim.kills
 end
 
+local STREAK_FLAVOR = {
+    [5] = {
+        "Five people have now made this their problem.",
+        "The first five were just to see if anyone was paying attention.",
+        "Somewhere, a paladin is typing for help.",
+        "Apparently, dying is part of their rotation.",
+        "The graveyard is getting repeat customers.",
+        "I love when the content delivers itself.",
+        "Not sure what their plan was, but that wasn't it.",
+        "Five kills and I've already been called toxic twice.",
+        "This is turning into a very affordable evening.",
+        "I don't think they read the PvP server description.",
+        "Their strategy appears to involve dying near me.",
+        "Somebody just added me to a very angry list.",
+        "The spirit healer is putting in overtime.",
+        "I was minding my business. Poorly.",
+        "They're going to blame the class matchup.",
+        "At least someone's enjoying their subscription.",
+        "The first complaint is probably being drafted.",
+        "Five kills. Zero meaningful resistance.",
+        "I see the Alliance is trying a new respawn-based strategy.",
+        "That graveyard run is starting to look like cardio.",
+        "I hope their hearthstone is on cooldown.",
+        "I'm starting to recognize the same bad decisions.",
+        "Somebody's quest log is getting absolutely no attention.",
+        "They seem determined to make this a recurring expense.",
+        "The $14.99 continues to justify itself.",
+    },
+    [10] = {
+        "Their backup has officially become bonus content.",
+        "Ten kills and they're still treating this like a learning experience.",
+        "I haven't seen this many bad decisions since character creation.",
+        "Someone's definitely blaming their addons.",
+        "They're recruiting people who haven't heard the story yet.",
+        "I think their guild chat is discussing me.",
+        "The graveyard run is now part of their daily routine.",
+        "Ten kills. I'm practically providing a transportation service.",
+        "They came back with friends. I appreciate the referral.",
+        "A coordinated group would probably help. This isn't one.",
+        "Someone's about to explain how they almost had me.",
+        "I wonder how many times they're willing to test that theory.",
+        "The Alliance is trying to solve a skill issue with headcount.",
+        "I came for PvP. They brought a customer loyalty program.",
+        "Their revenge tour keeps stopping at the same graveyard.",
+        "Ten kills and someone still thinks the next attempt is different.",
+        "Their raid leader is about to become a former raid leader.",
+        "I hope they're getting rested XP from all this downtime.",
+        "This is the kind of gameplay that makes people reroll.",
+        "Someone just whispered a level 60 to come save them.",
+        "The rescue team has requested a rescue team.",
+        "They've tried everything except a different route.",
+        "I'm not camping. They're scheduling appointments.",
+        "They must have a quest to die here ten times.",
+        "Their entire evening is turning into a Taliaa side quest.",
+        "I've seen better coordination from escort quest NPCs.",
+        "The reinforcements arrived just in time to contribute.",
+        "At least the runback gives them time to reflect.",
+        "Imagine paying $14.99 to repeatedly visit the same spirit healer.",
+        "Somebody's going to call this a 10v1 despite there being ten corpses.",
+    },
+    [15] = {
+        "Fifteen kills and I'm somehow ruining their evening.",
+        "Their guild has been notified. Their guild is also dead.",
+        "I think somebody just said, 'Everyone focus the priest.'",
+        "They're treating my location like a world boss spawn.",
+        "Imagine assembling a group and making the problem worse.",
+        "At this point, I should be charging an entrance fee.",
+        "The graveyard is now their unofficial guild headquarters.",
+        "Someone has definitely threatened to report me.",
+        "Their strategy meeting should've been an email.",
+        "The Alliance appears to be conducting live durability testing.",
+        "I hope nobody told the new guy this would be easy.",
+        "They're not even questing anymore. It's just revenge and disappointment.",
+        "Their guild recruitment message should probably mention this.",
+        "Fifteen kills. I wonder if they're still having fun.",
+        "Every new arrival gets the same orientation.",
+        "They're organizing a manhunt against someone who's barely moving.",
+        "The group leader keeps inviting fresh optimism.",
+        "They've started blaming the healer. Classic.",
+        "At this point, even the NPCs are embarrassed.",
+        "Somebody is writing a paragraph I am absolutely not reading.",
+        "I'm not saying it's personal, but they've stopped looting.",
+        "Their revenge squad has developed a turnover problem.",
+        "Imagine logging in to help a friend and immediately regretting it.",
+        "I've become the only quest objective they care about.",
+        "At least somebody's subscription is getting used.",
+    },
+    [20] = {
+        "Twenty kills. The Alliance has officially become a renewable resource.",
+        "They brought the whole guild. That was considerate.",
+        "I'm beginning to think their raid frames are just a casualty list.",
+        "The rescue operation has become the emergency.",
+        "Someone is going to need a new excuse.",
+        "Twenty kills and they still believe the next pull is the one.",
+        "Their strategy has evolved from dying alone to dying together.",
+        "I should probably send their guild leader a thank-you note.",
+        "The Alliance has escalated this to upper management.",
+        "I didn't realize I was tonight's scheduled raid boss.",
+        "Twenty kills. Still cheaper than going to the movies.",
+        "They're calling this a war. I'm calling it Tuesday.",
+        "The graveyard should consider assigned seating.",
+        "Their corpse runs now qualify as endurance training.",
+        "At this point, the spirit healer knows everyone by name.",
+    },
+    [25] = {
+        "This entire zone has become a customer service complaint.",
+        "I think the Alliance is trying to unlock a secret defeat achievement.",
+        "The reinforcements have started asking for reinforcements.",
+        "Someone needs to tell the guild leader what actually happened.",
+        "My $14.99 is doing some incredible work tonight.",
+        "They're going to need a spreadsheet to explain these losses.",
+        "The graveyard has become the most successful Alliance gathering point.",
+        "Their strategy is now entirely based on hoping I disconnect.",
+        "I believe I've accidentally started an Alliance guild meeting.",
+        "They've stopped trying to win and started trying to prove a point.",
+    },
+}
+
+-- Each milestone uses its own shuffled deck: no repeats until that tier is exhausted.
+-- This is transient UI flavor only; it never touches kill statistics or SavedVariables.
+local streakDecks = {}
+local function PickStreakFlavor(tier)
+    local pool = STREAK_FLAVOR[tier]
+    if not pool or #pool == 0 then return nil end
+    local deck = streakDecks[tier]
+    if not deck or #deck == 0 then
+        deck = {}
+        for i = 1, #pool do deck[i] = i end
+        for i = #deck, 2, -1 do
+            local j = math.random(i)
+            deck[i], deck[j] = deck[j], deck[i]
+        end
+        streakDecks[tier] = deck
+    end
+    return pool[table.remove(deck)]
+end
+
+local function StreakFlavor(streak)
+    streak = tonumber(streak) or 0
+    if streak < 5 or streak % 5 ~= 0 then return nil end
+    local tier = math.min(streak, 25)
+    return PickStreakFlavor(tier)
+end
+
+local function BuildStreakEndMessage(streak)
+    streak = tonumber(streak) or 0
+    if streak < 5 then return nil end
+    local me = tostring(VoidMarkForever.API.UnitName("player") or "Player")
+    if streak >= 30 then
+        return string.format("%s's %d-kill streak finally ended. Reinforcements worked.", me, streak)
+    elseif streak >= 20 then
+        return string.format("%s's %d-kill streak ended. The zone can breathe again.", me, streak)
+    elseif streak >= 10 then
+        return string.format("%s's %d-kill streak ended.", me, streak)
+    end
+    return string.format("%s's %d-kill streak ended.", me, streak)
+end
+
 local function BuildKillAnnouncement(playerName, playerGUID, playerLevel, playerClass, location, historicalKills, todayVictimKills)
-    local displayName = DisplayPlayerName(playerName or "?")
+    local displayName = tostring(playerName or "?")
+    displayName = displayName:match("^[^-]+") or displayName
 
     -- "Session" is this victim's merged account-wide count in the current
     -- 08:00-to-08:00 hunt window. GetTodayVictimKillCount() is built from the
@@ -2301,17 +2929,137 @@ local function BuildKillAnnouncement(playerName, playerGUID, playerLevel, player
         sessionVictimKills = 1
     end
 
-    return string.format(
-        "%s L%s | Session %dx | Historical %dx",
+    local message = string.format(
+        "%s L%s | Today %dx | Historical %dx",
         displayName,
         tostring(playerLevel or "?"),
         sessionVictimKills,
         tonumber(historicalKills) or 0
     )
+
+    return message
 end
 
-function GT:RecordKill(playerName, playerGUID)
+local function BuildStreakMilestoneMessage()
+    local streak = tonumber(GT.currentStreak) or 0
+    local flavor = StreakFlavor(streak)
+    if not flavor then return nil end
+    return string.format("Kill streak %d - %s", streak, flavor)
+end
+
+
+-- Lightweight kill-path profiler. Silent during play; inspect with /tgank perf.
+GT._killPerf = GT._killPerf or { samples = {}, maxSamples = 20 }
+
+local function PerfNowMS()
+    if debugprofilestop then
+        return debugprofilestop()
+    end
+    return (GetTime and GetTime() or 0) * 1000
+end
+
+local function PerfPushSample(sample)
+    local p = GT._killPerf
+    p.samples[#p.samples + 1] = sample
+    while #p.samples > (p.maxSamples or 20) do
+        table.remove(p.samples, 1)
+    end
+end
+
+local function PerfMark(sample, label, lastMS)
+    local nowMS = PerfNowMS()
+    sample.steps[#sample.steps + 1] = {
+        label = label,
+        ms = math.max(0, nowMS - (lastMS or sample.startedMS or nowMS)),
+    }
+    return nowMS
+end
+
+local function PrintKillPerf()
+    local p = GT._killPerf
+    local samples = p and p.samples or nil
+    if not samples or #samples == 0 then
+        Print("PERF: no kill samples recorded yet.")
+        return
+    end
+
+    local latest = samples[#samples]
+    Print(string.format("PERF latest: %s | total %.2f ms",
+        BasePlayerName(latest.name or "?"),
+        tonumber(latest.totalMS) or 0))
+
+    for _, step in ipairs(latest.steps or {}) do
+        Print(string.format("  %s: %.2f ms", tostring(step.label), tonumber(step.ms) or 0))
+    end
+
+    local worst = latest
+    for _, s in ipairs(samples) do
+        if (tonumber(s.totalMS) or 0) > (tonumber(worst.totalMS) or 0) then
+            worst = s
+        end
+    end
+    if worst ~= latest then
+        Print(string.format("PERF worst of last %d: %s | %.2f ms",
+            #samples,
+            BasePlayerName(worst.name or "?"),
+            tonumber(worst.totalMS) or 0))
+        for _, step in ipairs(worst.steps or {}) do
+            Print(string.format("  WORST %s: %.2f ms", tostring(step.label), tonumber(step.ms) or 0))
+        end
+    else
+        Print(string.format("PERF worst of last %d: latest sample.", #samples))
+    end
+end
+
+local function IgnoreBattlegroundStats()
+    if VoidMark and VoidMark.ShouldIgnoreBattlegroundStats then
+        return VoidMark:ShouldIgnoreBattlegroundStats()
+    end
+    local profile = VoidMark and VoidMark.db and VoidMark.db.profile
+    if not (profile and profile.IgnoreBattlegroundStats) then return false end
+    local inInstance, instanceType = VoidMarkForever.API.IsInInstance()
+    return inInstance == true and instanceType == "pvp"
+end
+
+function GT:ShouldIgnoreBattlegroundStats()
+    return IgnoreBattlegroundStats()
+end
+
+function GT:RecordKill(playerName, playerGUID, shouldAnnounce)
     if not playerName or playerName == "" then return end
+    if IgnoreBattlegroundStats() then return end
+
+    -- Authoritative kill credit overrides stale Feign state for this death.
+    local confirmedAt = 0
+    if playerGUID and recentConfirmedPlayerKills then
+        confirmedAt = tonumber(recentConfirmedPlayerKills[playerGUID]) or 0
+    end
+    local confirmedRealDeath = confirmedAt > 0 and (GetTime() - confirmedAt) <= 2.0
+
+    -- Final central Feign gate. Every kill source (VoidMark, PARTY_KILL, UNIT_DIED,
+    -- assist fallback) eventually passes through RecordKill(), so also ask the
+    -- live unit state here. This covers Classic clients that do not expose a
+    -- usable Feign flag/spell event before kill credit is emitted.
+    if not confirmedRealDeath and IsUnitCurrentlyFeigningName and IsUnitCurrentlyFeigningName(playerName) then
+        MarkHunterFeign(playerGUID, playerName)
+        if playerGUID then recentOutgoingVictims[playerGUID] = nil end
+        return
+    end
+
+    -- Feign Death can generate UNIT_DIED-like traffic in Classic. Suppress it
+    -- centrally so VoidMark.lua, PARTY_KILL/UNIT_DIED fallbacks, and other callers
+    -- cannot accidentally turn a feign into a real gank. Authoritative PARTY_KILL
+    -- credit overrides stale Feign state from the same death.
+    if not confirmedRealDeath and GT:IsRecentFeign(playerName, playerGUID) then
+        return
+    end
+
+    local perf = {
+        name = playerName,
+        startedMS = PerfNowMS(),
+        steps = {},
+    }
+    local perfLastMS = perf.startedMS
 
     -- Never count pets, guardians, NPCs, totems or vehicles as ganks. Some
     -- player-controlled pets can satisfy Blizzard's "hostile players" combat-log
@@ -2329,8 +3077,8 @@ function GT:RecordKill(playerName, playerGUID)
     else
         dedupeKey = "N:" .. NormalizedPlayerName(playerName)
     end
-    local lastEvent = self.recentKillEvents[dedupeKey] or 0
-    if now - lastEvent < 6 then
+    local lastEvent = self.recentKillEvents[dedupeKey]
+    if lastEvent and now - lastEvent < 6 then
         return
     end
     self.recentKillEvents[dedupeKey] = now
@@ -2338,9 +3086,12 @@ function GT:RecordKill(playerName, playerGUID)
     local zone = GetZoneText() or "Unknown"
     local subZone = GetSubZoneText() or ""
     local location = CurrentLocation()
+    perfLastMS = PerfMark(perf, "preflight/location", perfLastMS)
     local playerLevel, playerClass = GetPlayerDetails(playerName, playerGUID)
+    perfLastMS = PerfMark(perf, "player details", perfLastMS)
     local historicalKills = 0
     local repositoryAdded = nil
+    local todayCountBeforeRepository = GetCurrentTodayCount(playerName, playerGUID)
 
     if TaliaaGankRepository and TaliaaGankRepository.RecordKill then
         historicalKills, repositoryAdded = TaliaaGankRepository:RecordKill(playerName, playerGUID, {
@@ -2348,43 +3099,106 @@ function GT:RecordKill(playerName, playerGUID)
             subZone = subZone,
             level = playerLevel,
             class = playerClass,
-            killer = UnitName("player") or "?",
+            killer = VoidMarkForever.API.UnitName("player") or "?",
         })
         historicalKills = tonumber(historicalKills) or 0
     end
+    perfLastMS = PerfMark(perf, "repository write", perfLastMS)
 
-    -- New repository builds return false when the second account/another callback
-    -- already recorded this same death. Do not double-increment the local UI.
-    if repositoryAdded == false then
-        return
+    -- RunBack's separate death listener can miss a kill that GankTracker
+    -- confirmed through an alternate credit path. Defer the backup so the
+    -- regular death listener gets first chance to create its timer. This does
+    -- not modify the kill ledger or interfere with successful timers.
+    if IsPlayerGUID(playerGUID) and C_Timer and C_Timer.After then
+        local runbackName, runbackGUID = playerName, playerGUID
+        C_Timer.After(0.20, function()
+            if VoidMark and VoidMark.EnsureRunBackForConfirmedKill
+                and not GT:IsRecentFeign(runbackName, runbackGUID) then
+                VoidMark:EnsureRunBackForConfirmedKill(runbackName, runbackGUID)
+            end
+        end)
     end
 
-    -- Session streak bookkeeping is only advanced after the repository accepts
-    -- the death (or when running without the repository for compatibility).
-    AddSessionKill(playerName)
+    -- Keep VoidMark's visible W/L cache in lockstep with the canonical lifetime
+    -- repository value returned for this kill. This fixes rows that could remain
+    -- at 0-0 while the kill announcement correctly reported Historical 2x, etc.
+    SyncVoidMarkLifetimeRecord(playerName, playerGUID, historicalKills)
+    perfLastMS = PerfMark(perf, "VoidMark W/L sync", perfLastMS)
 
-    -- PERFORMANCE: update today's in-memory counters directly. The old path
-    -- walked the entire 2k+ event repository multiple times at the instant of a
-    -- kill, which is exactly when combat responsiveness matters most.
-    local todayVictimKills = ApplyLocalKillToDailyStats(
-        playerName, playerGUID, playerLevel, zone, subZone, location, historicalKills
-    )
+    -- The local six-second gate above is authoritative for streak/effect credit on
+    -- this client. The repository may return false simply because VoidMark.lua or the
+    -- paired account stored the same death first. Returning here used to make a
+    -- legitimate local kill advance Today/Historical while leaving KILL STREAK at 0.
+    AddSessionKill(playerName)
+    perfLastMS = PerfMark(perf, "session/streak", perfLastMS)
+
+    -- Kill Effects follows accepted kills. Hunters get a short grace period
+    -- because Classic can emit UNIT_DIED for Feign after an earlier kill-credit
+    -- path. This prevents fake deaths from firing Fatality/multikill audio.
+    if VoidMarkKillEffects and VoidMarkKillEffects.OnKill then
+        if GT:IsKnownHunter(playerName, playerGUID) and C_Timer and C_Timer.After then
+            local effectName, effectGUID, effectStreak = playerName, playerGUID, GT.currentStreak
+            local confirmedAt = effectGUID and tonumber(recentConfirmedPlayerKills[effectGUID]) or 0
+            if confirmedAt > 0 and (GetTime() - confirmedAt) <= 2.0 then
+                -- PARTY_KILL is the authoritative real-Hunter-death signal.
+                VoidMarkKillEffects:OnKill(effectName, effectGUID, effectStreak)
+            else
+                -- Unconfirmed Hunter death paths can be Feign. Wait long enough
+                -- for UNIT_DIED/Feign classification before allowing any kill audio.
+                C_Timer.After(2.25, function()
+                    if not GT:IsRecentFeign(effectName, effectGUID) then
+                        VoidMarkKillEffects:OnKill(effectName, effectGUID, effectStreak)
+                    end
+                end)
+            end
+        else
+            VoidMarkKillEffects:OnKill(playerName, playerGUID, GT.currentStreak)
+        end
+    end
+    perfLastMS = PerfMark(perf, "Kill Effects", perfLastMS)
+    -- Feign warning / kill-effect validation refresh marker.
+
+    local todayVictimKills = GetTodayVictimKillCount(playerName, playerGUID)
+
+    -- Lifetime can never be lower than today's count. During two-client sync the
+    -- victim index can trail the event ledger by a frame, so clamp the visible
+    -- announcement to the logically valid minimum while normal repair catches up.
+    historicalKills = math.max(tonumber(historicalKills) or 0, tonumber(todayVictimKills) or 0)
+
+    GT.lastKillName = playerName
+    GT.lastKillGUID = playerGUID
+    GT.lastKillLevel = playerLevel
+    GT.lastKillLocation = location
+    GT.lastKillHistorical = historicalKills
+
+    -- Rebuild the rest of today's cached counters after combat instead of trying
+    -- to locally increment them on every client that saw the same group death.
+    GT._historyRefreshPending = true
+    perfLastMS = PerfMark(perf, "today/history counters", perfLastMS)
 
     levelLookup.dirty = true
 
     -- v8.9: do not call chat/network APIs from inside the combat-log death
     -- callback. Queue the already-built message for a few hundredths of a second
     -- later so the death frame can return to the client immediately.
-    if self.partyAnnounce then
+    if self.partyAnnounce and shouldAnnounce ~= false then
         local killMessage = BuildKillAnnouncement(
             playerName, playerGUID, playerLevel, playerClass, location, historicalKills, todayVictimKills
         )
+        local streakMessage = BuildStreakMilestoneMessage()
         if C_Timer and C_Timer.After then
             C_Timer.After(0.05, function() SafeGroupMessage(killMessage) end)
+            if streakMessage then
+                C_Timer.After(0.15, function() SafeGroupMessage(streakMessage) end)
+            end
         else
             SafeGroupMessage(killMessage)
+            if streakMessage then
+                SafeGroupMessage(streakMessage)
+            end
         end
     end
+    perfLastMS = PerfMark(perf, "announcement queue", perfLastMS)
 
     -- Never do revenge-table walks or a GankTracker repaint in the death
     -- callback, even if the killing blow happens to drop combat immediately.
@@ -2401,13 +3215,25 @@ function GT:RecordKill(playerName, playerGUID)
             GT._killDeferredTimerArmed = nil
             if InCombatLockdown and InCombatLockdown() then return end
             FlushPendingRevengeClaims()
+            if GT._historyRefreshPending then
+                GT._historyRefreshPending=nil
+                RefreshDailyStats()
+                SeedSessionFromHistory()
+            end
             GT._displayRefreshPending = nil
             UpdateDisplay()
         end)
     end
+
+    perfLastMS = PerfMark(perf, "deferred UI scheduling", perfLastMS)
+    perf.totalMS = math.max(0, PerfNowMS() - perf.startedMS)
+    PerfPushSample(perf)
 end
 
 function GT:OnHistoryUpdated(playerName, playerGUID, historicalKills)
+    recordStatsCache.stats = nil
+    weeklyStatsCache.stats = nil
+    SyncVoidMarkLifetimeRecord(playerName, playerGUID, historicalKills)
     -- Repository updates here are remote/sync updates; local GT:RecordKill uses
     -- the incremental path above. Never rescan thousands of rows in combat.
     levelLookup.dirty = true
@@ -2432,6 +3258,7 @@ function GT:OnHistoryUpdated(playerName, playerGUID, historicalKills)
 end
 
 function GT:OnHistoricalRepair(playerName, playerGUID, historicalKills)
+    SyncVoidMarkLifetimeRecord(playerName, playerGUID, historicalKills)
     -- Lightweight post-combat identity repair. Daily/session counters were already
     -- updated when the kill happened; only the displayed lifetime value may need
     -- to rise after an accent/legacy alias is reconciled.
@@ -2523,7 +3350,7 @@ end
 
 local function MakeStat(parent, x, label)
     local holder = CreateFrame("Frame", nil, parent)
-    holder:SetSize(54, 38)
+    holder:SetSize(46, 38)
     holder:SetPoint("TOPLEFT", parent, "TOPLEFT", x, -62)
 
     local value = holder:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -2562,7 +3389,7 @@ local function MakeLevelStat(parent, x, label)
 end
 
 -- Main Gank Tracker ---------------------------------------------------------
-local frame = CreateFrame("Frame", "VoidMarkGankTrackerFrame", UIParent, "BackdropTemplate")
+local frame = CreateFrame("Frame", "TaliaaVoidMarkGankTrackerFrame", UIParent, "BackdropTemplate")
 GT.Frame = frame
 
 frame:SetSize(250, 292)
@@ -2574,6 +3401,10 @@ frame:EnableMouse(true)
 frame:RegisterForDrag("LeftButton")
 ApplyVoidMarkFrame(frame, VM_BG)
 
+-- Start hidden every login/reload. The tracker continues collecting data in the
+-- background and the VoidMark GT button (or /tgank show) opens it on demand.
+frame:Hide()
+
 local function GankUIState()
     if not VoidMarkDB then return nil end
     VoidMarkDB.TaliaaGankUI = VoidMarkDB.TaliaaGankUI or {}
@@ -2581,6 +3412,9 @@ local function GankUIState()
 end
 
 local function SaveGankPosition()
+    -- The compact tracker is docked to VoidMark and should never overwrite the
+    -- user's free-floating expanded position.
+    if GT.IsMinimized and GT:IsMinimized() then return end
     local state = GankUIState()
     if not state then return end
     local point, _, relativePoint, x, y = frame:GetPoint(1)
@@ -2589,6 +3423,7 @@ local function SaveGankPosition()
     state.x = x or 0
     state.y = y or 0
 end
+
 
 local function RestoreGankPosition()
     local state = GankUIState()
@@ -2601,6 +3436,7 @@ end
 RestoreGankPosition()
 
 frame:SetScript("OnDragStart", function(self)
+    if GT.IsMinimized and GT:IsMinimized() then return end
     self:StartMoving()
 end)
 frame:SetScript("OnDragStop", function(self)
@@ -2659,7 +3495,9 @@ frame.CloseButton:SetScript("OnLeave", function(self)
     self.Text:SetTextColor(1.0, 0.28, 0.38, 1)
     GameTooltip:Hide()
 end)
-frame.CloseButton:SetScript("OnClick", function() frame:Hide() end)
+frame.CloseButton:SetScript("OnClick", function()
+    if GT.SetMinimized then GT:SetMinimized(true) else frame:Hide() end
+end)
 
 frame.MinimizeButton = CreateFrame("Button", nil, header)
 frame.MinimizeButton:SetSize(18, 18)
@@ -2672,7 +3510,7 @@ frame.MinimizeButton:SetScript("OnEnter", function(self)
     self.Text:SetTextColor(1, 1, 1, 1)
     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
     GameTooltip:AddLine("Minimize Gank Tracker", 0.78, 0.45, 1.0)
-    GameTooltip:AddLine("Tracking continues in compact mode.", 0.85, 0.85, 0.85)
+    GameTooltip:AddLine("Tracking continues while hidden.", 0.85, 0.85, 0.85)
     GameTooltip:Show()
 end)
 frame.MinimizeButton:SetScript("OnLeave", function(self)
@@ -2687,10 +3525,11 @@ frame.CompactText:SetJustifyH("LEFT")
 frame.CompactText:SetTextColor(0.82, 0.72, 0.90, 1)
 frame.CompactText:Hide()
 
-frame.TotalValue = MakeStat(frame, 10, "KILLS")
-frame.UniqueValue = MakeStat(frame, 69, "UNIQUE")
-frame.DupeValue = MakeStat(frame, 128, "REPEATS")
-frame.NearbyValue = MakeStat(frame, 187, "60s / 30s")
+frame.TotalValue = MakeStat(frame, 3, "KILLS")
+frame.UniqueValue = MakeStat(frame, 52, "UNIQUE")
+frame.DupeValue = MakeStat(frame, 101, "REPEATS")
+frame.NearbyValue = MakeStat(frame, 150, "60/30")
+frame.PetValue = MakeStat(frame, 199, "PETS")
 
 frame.LevelBucketValues = {}
 frame.LevelBucketValues["1-9"] = MakeLevelStat(frame, 2, "1-9")
@@ -2707,7 +3546,7 @@ divider:SetPoint("TOPLEFT", frame, "TOPLEFT", 8, -140)
 divider:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -8, -140)
 divider:SetHeight(1)
 
-local lastLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+lastLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 lastLabel:SetPoint("TOPLEFT", frame, "TOPLEFT", 10, -148)
 lastLabel:SetText("LAST MARK")
 lastLabel:SetTextColor(0.56, 0.48, 0.63, 1)
@@ -2733,18 +3572,30 @@ frame.RevengeText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall
 frame.RevengeText:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 10, 73)
 frame.RevengeText:SetPoint("RIGHT", frame, "RIGHT", -10, 0)
 frame.RevengeText:SetJustifyH("LEFT")
+-- Status rows must not wrap into their neighbors at different UI scales.
+frame.RevengeText:SetHeight(12)
+if frame.RevengeText.SetWordWrap then frame.RevengeText:SetWordWrap(false) end
+if frame.RevengeText.SetMaxLines then frame.RevengeText:SetMaxLines(1) end
 frame.RevengeText:SetTextColor(0.50, 0.44, 0.56, 1)
 
 frame.RepoText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 frame.RepoText:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 10, 59)
 frame.RepoText:SetPoint("RIGHT", frame, "RIGHT", -10, 0)
 frame.RepoText:SetJustifyH("LEFT")
+-- Status rows must not wrap into their neighbors at different UI scales.
+frame.RepoText:SetHeight(12)
+if frame.RepoText.SetWordWrap then frame.RepoText:SetWordWrap(false) end
+if frame.RepoText.SetMaxLines then frame.RepoText:SetMaxLines(1) end
 frame.RepoText:SetTextColor(0.54, 0.45, 0.62, 1)
 
 frame.CombatText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 frame.CombatText:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 10, 45)
 frame.CombatText:SetPoint("RIGHT", frame, "RIGHT", -10, 0)
 frame.CombatText:SetJustifyH("LEFT")
+-- Status rows must not wrap into their neighbors at different UI scales.
+frame.CombatText:SetHeight(12)
+if frame.CombatText.SetWordWrap then frame.CombatText:SetWordWrap(false) end
+if frame.CombatText.SetMaxLines then frame.CombatText:SetMaxLines(1) end
 frame.CombatText:SetTextColor(0.54, 0.45, 0.62, 1)
 
 frame.SyncText = frame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
@@ -2782,6 +3633,7 @@ local expandedWidgets = {
     frame.UniqueValue and frame.UniqueValue.Holder,
     frame.DupeValue and frame.DupeValue.Holder,
     frame.NearbyValue and frame.NearbyValue.Holder,
+    frame.PetValue and frame.PetValue.Holder,
     frame.LevelBucketValues["1-9"] and frame.LevelBucketValues["1-9"].Holder,
     frame.LevelBucketValues["10-20"] and frame.LevelBucketValues["10-20"].Holder,
     frame.LevelBucketValues["21-30"] and frame.LevelBucketValues["21-30"].Holder,
@@ -2798,37 +3650,43 @@ local expandedWidgets = {
 function GT:SetMinimized(minimized)
     minimized = minimized and true or false
     local state = GankUIState()
-    if state then state.minimized = minimized end
 
-    for _, widget in ipairs(expandedWidgets) do
-        if widget then
-            if minimized then widget:Hide() else widget:Show() end
+    -- Preserve the expanded/free-floating position before marking the tracker
+    -- minimized; SaveGankPosition intentionally ignores minimized state.
+    if minimized and frame:IsShown() then
+        local point, relativeTo, relativePoint, x, y = frame:GetPoint(1)
+        if state and (relativeTo == UIParent or relativeTo == nil) then
+            state.point = point or state.point or "CENTER"
+            state.relativePoint = relativePoint or state.relativePoint or state.point
+            state.x = x or state.x or 0
+            state.y = y or state.y or 0
         end
     end
+    if state then state.minimized = minimized end
 
+    -- "Minimized" now means the full tracker is hidden. The compact K/U/R/DK
+    -- summary is rendered directly inside the VoidMark header, so there is no
+    -- second frame to dock or drag.
     if minimized then
-        frame:SetSize(310, 32)
-        header:SetHeight(30)
-        title:SetText("VOIDMARK")
-        title:ClearAllPoints()
-        title:SetPoint("LEFT", header, "LEFT", 9, 0)
-
-        frame.CompactText:ClearAllPoints()
-        frame.CompactText:SetPoint("LEFT", header, "LEFT", 92, 0)
-        frame.CompactText:SetPoint("RIGHT", frame.MinimizeButton, "LEFT", -8, 0)
-        frame.CompactText:SetJustifyH("LEFT")
-        frame.CompactText:Show()
-        frame.MinimizeButton.Text:SetText("+")
+        frame.CompactText:Hide()
+        frame:SetSize(250, 292)
+        frame:Hide()
     else
         frame:SetSize(250, 292)
+        RestoreGankPosition()
+        for _, widget in ipairs(expandedWidgets) do
+            if widget then widget:Show() end
+        end
         header:SetHeight(56)
         title:SetText("VOIDMARK  •  GANK TRACKER")
         title:ClearAllPoints()
         title:SetPoint("TOPLEFT", header, "TOPLEFT", 9, -5)
         frame.CompactText:Hide()
         frame.MinimizeButton.Text:SetText("−")
+        frame:Show()
     end
 
+    GT:RefreshVoidMarkCompact()
     UpdateDisplay()
 end
 
@@ -2839,26 +3697,52 @@ end
 
 function GT:ToggleWindow()
     if frame:IsShown() then
+        SaveGankPosition()
+        frame.CompactText:Hide()
+        frame:SetSize(250, 292)
         frame:Hide()
+        local state = GankUIState()
+        if state then state.minimized = true end
     else
+        local state = GankUIState()
+        if state then state.minimized = false end
+        frame:SetSize(250, 292)
+        RestoreGankPosition()
+        for _, widget in ipairs(expandedWidgets) do
+            if widget then widget:Show() end
+        end
+        header:SetHeight(56)
+        title:SetText("VOIDMARK  •  GANK TRACKER")
+        title:ClearAllPoints()
+        title:SetPoint("TOPLEFT", header, "TOPLEFT", 9, -5)
+        frame.CompactText:Hide()
+        frame.MinimizeButton.Text:SetText("−")
         frame:Show()
         UpdateDisplay()
     end
+    GT:RefreshVoidMarkCompact()
 end
 
 frame.MinimizeButton:SetScript("OnClick", function()
-    GT:SetMinimized(not GT:IsMinimized())
+    GT:SetMinimized(true)
 end)
 
+-- Always start with the full tracker hidden; the inline VoidMark summary is the
+-- compact/minimized presentation.
 local initialUIState = GankUIState()
-if initialUIState and initialUIState.minimized then
-    C_Timer.After(0, function() GT:SetMinimized(true) end)
-end
+if initialUIState then initialUIState.minimized = true end
+frame.CompactText:Hide()
+frame:SetSize(250, 292)
+frame:Hide()
+C_Timer.After(0, function()
+    frame:Hide()
+    GT:RefreshVoidMarkCompact()
+end)
 
 -- Options -------------------------------------------------------------------
-local optionsFrame = CreateFrame("Frame", "VoidMarkGankOptionsFrame", UIParent, "BackdropTemplate")
+local optionsFrame = CreateFrame("Frame", "TaliaaVoidMarkGankOptionsFrame", UIParent, "BackdropTemplate")
 GT.OptionsFrame = optionsFrame
-optionsFrame:SetSize(350, 325)
+optionsFrame:SetSize(350, 355)
 optionsFrame:SetPoint("CENTER", UIParent, "CENTER", 535, 120)
 optionsFrame:SetFrameStrata("DIALOG")
 optionsFrame:SetClampedToScreen(true)
@@ -2910,6 +3794,7 @@ local function HelpText(textValue, y)
 end
 
 local simpleButtons = {}
+local RefreshPanicStyle
 
 local function SetSimpleButtonState(button, active)
     if not button then return end
@@ -2949,7 +3834,7 @@ end
 
 local fixedKillLine = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 fixedKillLine:SetPoint("TOPLEFT", optionsFrame, "TOPLEFT", 16, -48)
-fixedKillLine:SetText("Kill line:  Name  •  Level  •  Session  •  Historical")
+fixedKillLine:SetText("Kill line:  Name  •  Level  •  Today  •  Historical")
 fixedKillLine:SetTextColor(0.66, 0.58, 0.72, 1)
 
 -- --------------------------------------------------------------------------
@@ -2961,17 +3846,17 @@ HelpText("REPORT sends the tab you are looking at: TODAY, WEEK, or RECORDS.", -9
 MakeVoidMarkCheckbox("levelBreakdown", "LEVEL BREAKDOWN", 16, -123)
 
 local sendLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-sendLabel:SetPoint("TOPLEFT", optionsFrame, "TOPLEFT", 16, -160)
+sendLabel:SetPoint("TOPLEFT", optionsFrame, "TOPLEFT", 16, -190)
 sendLabel:SetText("Send report to")
 sendLabel:SetTextColor(0.56, 0.49, 0.62, 1)
 
-MakeVoidMarkCheckbox("party", "PARTY/RAID", 16, -178)
-MakeVoidMarkCheckbox("guild", "GUILD", 112, -178)
-MakeVoidMarkCheckbox("whisper", "WHISPER", 184, -178)
-MakeVoidMarkCheckbox("say", "SAY", 278, -178)
+MakeVoidMarkCheckbox("party", "PARTY/RAID", 16, -208)
+MakeVoidMarkCheckbox("guild", "GUILD", 112, -208)
+MakeVoidMarkCheckbox("whisper", "WHISPER", 184, -208)
+MakeVoidMarkCheckbox("say", "SAY", 278, -208)
 
 local whisperLabel = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-whisperLabel:SetPoint("TOPLEFT", optionsFrame, "TOPLEFT", 16, -214)
+whisperLabel:SetPoint("TOPLEFT", optionsFrame, "TOPLEFT", 16, -244)
 whisperLabel:SetText("Whisper target")
 whisperLabel:SetTextColor(0.56, 0.49, 0.62, 1)
 
@@ -2999,10 +3884,10 @@ end)
 -- --------------------------------------------------------------------------
 -- ACCOUNT SYNC
 -- --------------------------------------------------------------------------
-SectionTitle("ACCOUNT SYNC", -253)
+SectionTitle("ACCOUNT SYNC", -283)
 
 local repoStatus = optionsFrame:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-repoStatus:SetPoint("TOPLEFT", optionsFrame, "TOPLEFT", 16, -272)
+repoStatus:SetPoint("TOPLEFT", optionsFrame, "TOPLEFT", 16, -302)
 repoStatus:SetWidth(318)
 repoStatus:SetJustifyH("LEFT")
 repoStatus:SetTextColor(0.58, 0.51, 0.64, 1)
@@ -3063,7 +3948,7 @@ pairButton:SetScript("OnClick", function()
     end
 end)
 
-local syncButton = MakeFlatButton(optionsFrame, "SYNC NOW", 86, 21)
+syncButton = MakeFlatButton(optionsFrame, "SYNC NOW", 86, 21)
 syncButton:SetPoint("LEFT", pairButton, "RIGHT", 6, 0)
 syncButton:SetScript("OnClick", function()
     if TaliaaGankRepository and TaliaaGankRepository.SyncNow then
@@ -3103,6 +3988,37 @@ simpleButtons.levelBreakdown:SetScript("OnClick", function(self)
     RefreshSimpleOptions()
 end)
 
+function GT:IsPanicEnabled()
+    return VoidMarkDB and VoidMarkDB.VoidMarkShowPanicButton == true
+end
+
+function GT:SetPanicEnabled(enabled)
+    enabled = enabled and true or false
+    if VoidMarkDB then
+        VoidMarkDB.VoidMarkShowPanicButton = enabled
+    end
+
+    if enabled then
+        -- One-minute grace so the user can position/test Panic with no nearby enemy.
+        GT._panicVisibleUntil = GetTime() + 60
+    else
+        GT._panicVisibleUntil = nil
+    end
+
+    if RestorePanicVisibility then
+        RestorePanicVisibility()
+    elseif GT.PanicFrame then
+        if enabled then GT.PanicFrame:Show() else GT.PanicFrame:Hide() end
+    end
+
+    RefreshSimpleOptions()
+end
+
+function GT:TogglePanicEnabled()
+    self:SetPanicEnabled(not self:IsPanicEnabled())
+    return self:IsPanicEnabled()
+end
+
 for _, key in ipairs({"party", "guild", "whisper", "say"}) do
     simpleButtons[key]:SetScript("OnClick", function(self)
         local report = EnsureReportSettings()
@@ -3133,7 +4049,7 @@ frame.OptionsButton:SetScript("OnClick", function()
 end)
 
 -- Panic ---------------------------------------------------------------------
-local panicFrame = CreateFrame("Frame", "VoidMarkPanicFrame", UIParent, "BackdropTemplate")
+local panicFrame = CreateFrame("Frame", "TaliaaVoidMarkPanicFrame", UIParent, "BackdropTemplate")
 GT.PanicFrame = panicFrame
 panicFrame:SetSize(118, 34)
 panicFrame:SetFrameStrata("DIALOG")
@@ -3171,6 +4087,36 @@ local function RestorePanicPosition()
 end
 RestorePanicPosition()
 
+RestorePanicVisibility = function()
+    if not GT.PanicFrame then return end
+
+    local enabled = VoidMarkDB and VoidMarkDB.VoidMarkShowPanicButton == true
+    if not enabled then
+        GT._panicVisibleUntil = nil
+        if GT.PanicFrame:IsShown() then GT.PanicFrame:Hide() end
+        return
+    end
+
+    local now = GetTime()
+    local graceActive = GT._panicVisibleUntil and now < GT._panicVisibleUntil
+
+    local nearbyCount = 0
+    if VoidMark and VoidMark.GetNearbyListSize then
+        nearbyCount = tonumber(VoidMark:GetNearbyListSize()) or 0
+    elseif VoidMark and type(VoidMark.NearbyList) == "table" then
+        for _ in pairs(VoidMark.NearbyList) do nearbyCount = nearbyCount + 1 end
+    end
+
+    local shouldShow = graceActive or nearbyCount > 0
+    if shouldShow then
+        if not GT.PanicFrame:IsShown() then GT.PanicFrame:Show() end
+    else
+        if GT.PanicFrame:IsShown() then GT.PanicFrame:Hide() end
+    end
+end
+
+RestorePanicVisibility()
+
 local function StartPanicDrag()
     GT._panicDragging = true
     panicFrame:StartMoving()
@@ -3191,22 +4137,69 @@ panicFrame.Button:SetPoint("BOTTOMRIGHT", panicFrame, "BOTTOMRIGHT", -3, 3)
 panicFrame.Button:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
 panicFrame.Button:RegisterForClicks("LeftButtonUp")
 panicFrame.Button:RegisterForDrag("LeftButton")
+panicFrame.Button.Icon = panicFrame.Button:CreateTexture(nil, "ARTWORK")
+panicFrame.Button.Icon:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcon_8")
+panicFrame.Button.Icon:SetSize(24, 24)
+panicFrame.Button.Icon:SetPoint("TOP", panicFrame.Button, "TOP", 0, -5)
+
+-- Style artwork is built once and then shown/hidden by RefreshPanicStyle().
+-- This keeps the Panic control as one draggable/clickable frame while making
+-- each dropdown choice a genuinely different composition instead of a resized
+-- rectangle.
+panicFrame.Button.StyleDiamond = panicFrame.Button:CreateTexture(nil, "BACKGROUND", nil, -1)
+panicFrame.Button.StyleDiamond:SetTexture("Interface\\Buttons\\WHITE8X8")
+panicFrame.Button.StyleDiamond:SetSize(47, 47)
+panicFrame.Button.StyleDiamond:SetPoint("CENTER")
+if panicFrame.Button.StyleDiamond.SetRotation then
+    panicFrame.Button.StyleDiamond:SetRotation(math.rad(45))
+end
+
+panicFrame.Button.StyleRing = panicFrame.Button:CreateTexture(nil, "BACKGROUND", nil, -1)
+panicFrame.Button.StyleRing:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+panicFrame.Button.StyleRing:SetSize(66, 66)
+panicFrame.Button.StyleRing:SetPoint("CENTER")
+
+panicFrame.Button.StyleRingGlow = panicFrame.Button:CreateTexture(nil, "BACKGROUND", nil, -2)
+panicFrame.Button.StyleRingGlow:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+panicFrame.Button.StyleRingGlow:SetSize(76, 76)
+panicFrame.Button.StyleRingGlow:SetPoint("CENTER")
+panicFrame.Button.StyleRingGlow:SetBlendMode("ADD")
+panicFrame.Button.StyleRingGlow:SetAlpha(0.32)
+
+panicFrame.Button.BannerLeft = panicFrame.Button:CreateTexture(nil, "BACKGROUND", nil, -1)
+panicFrame.Button.BannerLeft:SetTexture("Interface\\Buttons\\WHITE8X8")
+panicFrame.Button.BannerLeft:SetSize(18, 18)
+if panicFrame.Button.BannerLeft.SetRotation then panicFrame.Button.BannerLeft:SetRotation(math.rad(45)) end
+
+panicFrame.Button.BannerRight = panicFrame.Button:CreateTexture(nil, "BACKGROUND", nil, -1)
+panicFrame.Button.BannerRight:SetTexture("Interface\\Buttons\\WHITE8X8")
+panicFrame.Button.BannerRight:SetSize(18, 18)
+if panicFrame.Button.BannerRight.SetRotation then panicFrame.Button.BannerRight:SetRotation(math.rad(45)) end
+
+panicFrame.Button.VoidGlow = panicFrame.Button:CreateTexture(nil, "BACKGROUND", nil, -2)
+panicFrame.Button.VoidGlow:SetTexture("Interface\\Buttons\\WHITE8X8")
+panicFrame.Button.VoidGlow:SetPoint("CENTER")
+panicFrame.Button.VoidGlow:SetBlendMode("ADD")
+panicFrame.Button.VoidGlow:SetAlpha(0.18)
+
+panicFrame.Button.Accent = panicFrame.Button:CreateTexture(nil, "BORDER")
+panicFrame.Button.Accent:SetTexture("Interface\\Buttons\\WHITE8X8")
+panicFrame.Button.Accent:SetPoint("BOTTOMLEFT", panicFrame.Button, "BOTTOMLEFT", 2, 2)
+panicFrame.Button.Accent:SetPoint("BOTTOMRIGHT", panicFrame.Button, "BOTTOMRIGHT", -2, 2)
+panicFrame.Button.Accent:SetHeight(2)
+
 panicFrame.Button.Label = panicFrame.Button:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 panicFrame.Button.Label:SetPoint("CENTER")
 panicFrame.Button.Label:SetText("PANIC  •  0")
 panicFrame.Button:SetScript("OnDragStart", StartPanicDrag)
 panicFrame.Button:SetScript("OnDragStop", StopPanicDrag)
 panicFrame.Button:SetScript("OnEnter", function(self)
-    self:SetBackdropColor(0.43, 0.035, 0.08, 1)
+    -- Keep the custom Panic artwork fully transparent on hover.
+    self:SetBackdropColor(0, 0, 0, 0)
+    self:SetBackdropBorderColor(0, 0, 0, 0)
     self.Label:SetTextColor(1, 1, 1, 1)
-    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-    GameTooltip:AddLine("VoidMark Panic", 0.88, 0.56, 1.0)
-    GameTooltip:AddLine("Click: send a short HELP call with your location and nearby level-60 count.", 0.88, 0.88, 0.92, true)
-    GameTooltip:AddLine("Drag: move this button.", 0.68, 0.62, 0.72)
-    GameTooltip:Show()
 end)
 panicFrame.Button:SetScript("OnLeave", function(self)
-    GameTooltip:Hide()
     if UpdatePanicDisplay then UpdatePanicDisplay() end
 end)
 panicFrame.Button:SetScript("OnClick", function()
@@ -3214,23 +4207,137 @@ panicFrame.Button:SetScript("OnClick", function()
     GT:Panic()
 end)
 
+local function GetPanicStyle()
+    if VoidMarkDB then VoidMarkDB.VoidMarkPanicStyle = "banner" end
+    return "banner"
+end
+
+RefreshPanicStyle = function()
+    if GT.RefreshPanicArt then
+        GT:RefreshPanicArt(true)
+        return
+    end
+
+    local style = GetPanicStyle()
+
+    local button = panicFrame.Button
+    button:ClearAllPoints()
+    button.Label:ClearAllPoints()
+    button.Icon:ClearAllPoints()
+    button.Icon:Show()
+    button.Accent:Hide()
+    button.StyleDiamond:Hide()
+    button.StyleRing:Hide()
+    button.StyleRingGlow:Hide()
+    button.BannerLeft:Hide()
+    button.BannerRight:Hide()
+    button.VoidGlow:Hide()
+
+    -- Reset to a transparent button; each style opts into only the visual
+    -- pieces it actually uses.
+    button:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
+    })
+    button:SetBackdropColor(0.035, 0.010, 0.050, 0.96)
+    button:SetBackdropBorderColor(0.48, 0.20, 0.68, 1)
+
+    if style == "banner" then
+        -- Wide emergency banner: skull badge, single-line copy, pointed ends.
+        panicFrame:SetSize(190, 46)
+        button:SetPoint("TOPLEFT", panicFrame, "TOPLEFT", 7, -6)
+        button:SetPoint("BOTTOMRIGHT", panicFrame, "BOTTOMRIGHT", -7, 6)
+        button:SetBackdrop({
+            bgFile = "Interface\\Buttons\\WHITE8X8",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            edgeSize = 9,
+            insets = {left=2,right=2,top=2,bottom=2},
+        })
+        button.Icon:SetSize(28, 28)
+        button.Icon:SetPoint("LEFT", button, "LEFT", 9, 0)
+        button.Label:SetPoint("LEFT", button.Icon, "RIGHT", 8, 0)
+        button.Label:SetFontObject("GameFontNormal")
+        button.Accent:Show()
+        button.BannerLeft:ClearAllPoints()
+        button.BannerLeft:SetPoint("CENTER", button, "LEFT", 1, 0)
+        button.BannerLeft:Show()
+        button.BannerRight:ClearAllPoints()
+        button.BannerRight:SetPoint("CENTER", button, "RIGHT", -1, 0)
+        button.BannerRight:Show()
+
+    elseif style == "diamond" then
+        -- Compact rotated diamond plate with the skull centered above the count.
+        panicFrame:SetSize(86, 86)
+        button:SetPoint("CENTER", panicFrame, "CENTER", 0, 0)
+        button:SetSize(70, 70)
+        button:SetBackdrop({
+            bgFile = "Interface\\Buttons\\WHITE8X8",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            edgeSize = 8,
+            insets = {left=3,right=3,top=3,bottom=3},
+        })
+        button:SetBackdropColor(0,0,0,0)
+        button:SetBackdropBorderColor(0,0,0,0)
+        button.StyleDiamond:Show()
+        button.Icon:SetSize(26, 26)
+        button.Icon:SetPoint("CENTER", button, "CENTER", 0, 8)
+        button.Label:SetPoint("CENTER", button, "CENTER", 0, -17)
+        button.Label:SetFontObject("GameFontNormalSmall")
+
+    elseif style == "ring" then
+        -- True circular alert badge using Blizzard's quickslot ring artwork.
+        panicFrame:SetSize(84, 84)
+        button:SetPoint("CENTER", panicFrame, "CENTER", 0, 0)
+        button:SetSize(72, 72)
+        button:SetBackdropColor(0,0,0,0)
+        button:SetBackdropBorderColor(0,0,0,0)
+        button.StyleRingGlow:Show()
+        button.StyleRing:Show()
+        button.Icon:SetSize(27, 27)
+        button.Icon:SetPoint("CENTER", button, "CENTER", 0, 8)
+        button.Label:SetPoint("CENTER", button, "CENTER", 0, -17)
+        button.Label:SetFontObject("GameFontNormalSmall")
+
+    else
+        -- Void Skull: tall occult plate, oversized skull and purple void glow.
+        panicFrame:SetSize(94, 104)
+        button:SetPoint("TOPLEFT", panicFrame, "TOPLEFT", 5, -5)
+        button:SetPoint("BOTTOMRIGHT", panicFrame, "BOTTOMRIGHT", -5, 5)
+        button:SetBackdrop({
+            bgFile = "Interface\\Buttons\\WHITE8X8",
+            edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+            edgeSize = 11,
+            insets = {left=3,right=3,top=3,bottom=3},
+        })
+        button.VoidGlow:ClearAllPoints()
+        button.VoidGlow:SetPoint("CENTER", button, "CENTER", 0, -1)
+        button.VoidGlow:SetSize(68, 78)
+        button.VoidGlow:Show()
+        button.Icon:SetSize(39, 39)
+        button.Icon:SetPoint("TOP", button, "TOP", 0, -8)
+        button.Label:SetPoint("BOTTOM", button, "BOTTOM", 0, 11)
+        button.Label:SetFontObject("GameFontNormal")
+        button.Accent:Show()
+        button.Accent:SetHeight(3)
+    end
+
+    ApplyVoidMarkFrame(panicFrame, VM_BG)
+    panicFrame:SetBackdropBorderColor(0.52, 0.08, 0.16, 1)
+    if UpdatePanicDisplay then UpdatePanicDisplay() end
+end
+RefreshPanicStyle()
+
 -- Session DHK / streak / revenge monitor ------------------------------------
 local combatMonitor = CreateFrame("Frame")
-combatMonitor:RegisterEvent("PLAYER_LOGIN")
-combatMonitor:RegisterEvent("PLAYER_ENTERING_WORLD")
-combatMonitor:RegisterEvent("PLAYER_REGEN_ENABLED")
-combatMonitor:RegisterEvent("CHAT_MSG_COMBAT_HONOR_GAIN")
-combatMonitor:RegisterEvent("CHAT_MSG_COMBAT_MISC_INFO")
-combatMonitor:RegisterEvent("COMBAT_TEXT_UPDATE")
-combatMonitor:RegisterEvent("PLAYER_DEAD")
-do
-    local _, _, _, interfaceVersion = GetBuildInfo()
-    if tonumber(interfaceVersion) == 16001 then
-        combatMonitor:RegisterEvent("PARTY_KILL")
-    else
-        combatMonitor:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-    end
-end
+VoidMarkForever.RegisterEvent(combatMonitor,"PLAYER_LOGIN")
+VoidMarkForever.RegisterEvent(combatMonitor,"PLAYER_ENTERING_WORLD")
+VoidMarkForever.RegisterEvent(combatMonitor,"PLAYER_REGEN_ENABLED")
+VoidMarkForever.RegisterEvent(combatMonitor,"CHAT_MSG_COMBAT_HONOR_GAIN")
+VoidMarkForever.RegisterEvent(combatMonitor,"CHAT_MSG_COMBAT_MISC_INFO")
+VoidMarkForever.RegisterEvent(combatMonitor,"COMBAT_TEXT_UPDATE")
+VoidMarkForever.RegisterEvent(combatMonitor,"PLAYER_DEAD")
+VoidMarkForever.RegisterEvent(combatMonitor,"COMBAT_LOG_EVENT_UNFILTERED")
 
 -- GetPVPSessionStats() is the authoritative current-character DK total in
 -- Classic Era. Poll lightly so VoidMark self-heals even when a chat event is
@@ -3250,8 +4357,263 @@ combatMonitor:SetScript("OnUpdate", function(_, elapsed)
 end)
 
 local lastHostilePlayer = nil
-local recentOutgoingVictims = {}
-local combatPlayerGUID = UnitGUID("player")
+local recentOutgoingHunterPets = {}
+local hunterPetGUIDCache = {}
+local combatPlayerGUID = VoidMarkForever.API.UnitGUID("player")
+
+local function IsHostilePlayerControlledPetFlags(flags)
+    local band = bit and bit.band
+    if not band or not flags then return false end
+    local typePet = COMBATLOG_OBJECT_TYPE_PET or 0x00001000
+    local controlPlayer = COMBATLOG_OBJECT_CONTROL_PLAYER or 0x00000100
+    local hostile = COMBATLOG_OBJECT_REACTION_HOSTILE or 0x00000040
+    return band(flags, typePet) ~= 0
+        and band(flags, controlPlayer) ~= 0
+        and band(flags, hostile) ~= 0
+end
+
+local function FindVisibleUnitByGUID(guid)
+    if not guid then return nil end
+    local quick = { "target", "mouseover" }
+    for _, unit in ipairs(quick) do
+        if VoidMarkForever.API.UnitExists(unit) and VoidMarkForever.API.UnitGUID(unit) == guid then return unit end
+    end
+    for i = 1, 40 do
+        local unit = "nameplate" .. i
+        if VoidMarkForever.API.UnitExists(unit) and VoidMarkForever.API.UnitGUID(unit) == guid then return unit end
+    end
+    return nil
+end
+
+local function ConfirmHunterPet(guid, flags)
+    if not guid or not IsHostilePlayerControlledPetFlags(flags) then return false end
+    if hunterPetGUIDCache[guid] ~= nil then return hunterPetGUIDCache[guid] end
+
+    local unit = FindVisibleUnitByGUID(guid)
+    if not unit then return false end
+
+    -- Classic hunter pets are player-controlled Beasts. Restricting the tracker
+    -- to Beast pets prevents Warlock demons and other controlled summons from
+    -- inflating the Hunter-pet counter.
+    local creatureType = VoidMarkForever.API.UnitCreatureType and VoidMarkForever.API.UnitCreatureType(unit) or nil
+    local isHunterPet = creatureType == "Beast"
+    hunterPetGUIDCache[guid] = isHunterPet and true or false
+    return isHunterPet
+end
+
+local FEIGN_DEATH_SPELL_ID = 5384
+local FEIGN_SUPPRESS_SECONDS = 8.0
+local recentFeign = {}
+local recentFeignByName = {}
+
+local function NormalizeFeignName(name)
+    if not name then return nil end
+    local base = VoidMarkForever.DisplayName(name)
+    return string.lower(base)
+end
+
+IsUnitCurrentlyFeigningName = function(name)
+    if not name or not VoidMarkForever.API.UnitIsFeignDeath then return false end
+    local function check(unit)
+        if not VoidMarkForever.API.UnitExists or not VoidMarkForever.API.UnitExists(unit) then return false end
+        local unitName = VoidMarkForever.FullName(unit)
+        if not unitName then return false end
+        local base = VoidMarkForever.DisplayName(unitName)
+        local wanted = VoidMarkForever.DisplayName(name)
+        if string.lower(base) ~= string.lower(wanted) then return false end
+        local ok, result = pcall(VoidMarkForever.API.UnitIsFeignDeath, unit)
+        return ok and result == true
+    end
+    if check("target") or check("mouseover") then return true end
+    for i = 1, 40 do
+        if check("nameplate"..i) then return true end
+    end
+    return false
+end
+
+function GT:IsUnitCurrentlyFeigningName(name)
+    return IsUnitCurrentlyFeigningName(name)
+end
+
+local IsKnownHunter
+function GT:ShouldSuppressHunterUnitDied(name, guid)
+    if not IsKnownHunter(name, guid) then return false end
+
+    -- PARTY_KILL is authoritative when our group receives credit, but a real
+    -- Hunter can also die nearby to somebody outside our group. UNIT_DIED alone
+    -- is therefore not proof of Feign Death.
+    local confirmedAt = guid and tonumber(recentConfirmedPlayerKills[guid]) or 0
+    if confirmedAt > 0 and (GetTime() - confirmedAt) <= 2.0 then return false end
+
+    if self.IsRecentFeign and self:IsRecentFeign(name, guid) then return true end
+    return IsUnitCurrentlyFeigningName(name) == true
+end
+
+IsKnownHunter = function(name, guid)
+    local data = FindPlayerDataForName and FindPlayerDataForName(name) or nil
+    local class = data and (data.class or data.Class) or nil
+    if not class and VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData then
+        local raw = VoidMarkPerCharDB.PlayerData[name]
+        class = raw and (raw.class or raw.Class) or nil
+    end
+    if not class and guid and VoidMarkForever.API.GetPlayerInfoByGUID then
+        local _, classFile = VoidMarkForever.API.GetPlayerInfoByGUID(guid)
+        class = classFile
+    end
+    return tostring(class or ""):upper() == "HUNTER"
+end
+function GT:IsKnownHunter(name, guid)
+    return IsKnownHunter(name, guid)
+end
+
+MarkHunterFeign = function(guid, name)
+    -- If a kill sound raced ahead of Classic's Feign classification, stop it
+    -- immediately when Feign is confirmed.
+    if VoidMarkKillEffects and VoidMarkKillEffects.StopActiveSound then
+        VoidMarkKillEffects:StopActiveSound(name, guid)
+    end
+
+    local now = GetTime()
+    if guid then
+        recentFeign[guid] = now
+        recentOutgoingVictims[guid] = nil
+    end
+    local key = NormalizeFeignName(name)
+    if key then recentFeignByName[key] = now end
+
+    -- One notice per actual Feign activation. SPELL_CAST_SUCCESS and
+    -- AURA_APPLIED can both report the same Feign, so suppress duplicates.
+    GT._lastFeignNotice = GT._lastFeignNotice or {}
+    local noticeKey = guid or key or tostring(name or "Hunter")
+    local last = tonumber(GT._lastFeignNotice[noticeKey]) or 0
+    if now - last <= 1.0 then return end
+    GT._lastFeignNotice[noticeKey] = now
+
+    local short = VoidMarkForever.DisplayName(name or "Hunter")
+    local message = short .. " FEIGN"
+    -- Normal party only: raid/solo stays private, avoiding unexpected raid spam.
+    if IsInGroup and IsInGroup() and not (IsInRaid and IsInRaid()) and SendChatMessage then
+        SendChatMessage(message, "PARTY")
+    else
+        Print(message)
+    end
+
+    -- Brief on-screen confirmation so the Feign is obvious even when chat is busy.
+    if UIParent and not GT._feignPopup then
+        local f = CreateFrame("Frame", nil, UIParent)
+        f:SetSize(360, 70)
+        f:SetPoint("CENTER", UIParent, "CENTER", 0, 150)
+        f:SetFrameStrata("FULLSCREEN_DIALOG")
+        f:SetFrameLevel(100)
+        f.text = f:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+        f.text:SetPoint("CENTER")
+        f.text:SetFont(STANDARD_TEXT_FONT, 32, "OUTLINE")
+        f:Hide()
+        GT._feignPopup = f
+    end
+    local popup = GT._feignPopup
+    if popup then
+        popup.text:SetText("|cffff2020" .. short .. " FEIGN|r")
+        popup:Show()
+        if C_Timer and C_Timer.After then
+            local token = (popup._token or 0) + 1
+            popup._token = token
+            C_Timer.After(3.0, function()
+                if popup and popup._token == token then popup:Hide() end
+            end)
+        else
+            popup:Hide()
+        end
+    end
+end
+
+local function ClearHunterFeign(guid, name)
+    if guid then recentFeign[guid] = nil end
+    local key = NormalizeFeignName(name)
+    if key then recentFeignByName[key] = nil end
+    local popup = GT._feignPopup
+    if popup then
+        popup._token = (popup._token or 0) + 1
+        popup:Hide()
+    end
+end
+
+local function ConfirmHunterRealDeath(guid, name)
+    if not guid then return end
+    recentConfirmedPlayerKills[guid] = GetTime()
+    -- A genuine kill can race with UNIT_DIED-based Feign detection, especially
+    -- when the Hunter dies at range to a DoT. Real kill credit wins: remove any
+    -- stale Feign state/popup so the following UNIT_DIED cannot show FEIGN.
+    ClearHunterFeign(guid, name)
+end
+
+function GT:ConfirmHunterRealDeath(playerGUID, playerName)
+    if not IsKnownHunter(playerName, playerGUID) then return false end
+    ConfirmHunterRealDeath(playerGUID, playerName)
+    GT._pendingHunterDeaths = GT._pendingHunterDeaths or {}
+    GT._pendingHunterDeaths[playerGUID] = nil
+    return true
+end
+
+function GT:HandleHunterUnitDied(playerGUID, playerName)
+    if not playerGUID or not IsKnownHunter(playerName, playerGUID) then return false end
+
+    local confirmedAt = tonumber(recentConfirmedPlayerKills[playerGUID]) or 0
+    if confirmedAt > 0 and (GetTime() - confirmedAt) <= 2.0 then
+        -- PARTY_KILL already proved this was a genuine death.
+        ClearHunterFeign(playerGUID, playerName)
+        return true
+    end
+
+    -- A nearby player outside our party can genuinely kill a Hunter and we will
+    -- see UNIT_DIED without receiving PARTY_KILL. Never infer Feign from that
+    -- absence alone. Require positive Feign evidence: a recent 5384 event, the
+    -- client live-unit state, or the unconscious flag handled by the caller.
+    if (GT.IsRecentFeign and GT:IsRecentFeign(playerName, playerGUID))
+        or IsUnitCurrentlyFeigningName(playerName) then
+        MarkHunterFeign(playerGUID, playerName)
+        return true
+    end
+
+    return false
+end
+
+function GT:HandleHunterFeign(playerGUID, playerName)
+    MarkHunterFeign(playerGUID, playerName)
+end
+
+function GT:IsRecentFeign(playerName, playerGUID)
+    local now = GetTime()
+    if playerGUID then
+        local t = tonumber(recentFeign[playerGUID])
+        if t and now - t <= FEIGN_SUPPRESS_SECONDS then return true end
+        if t and now - t > 10 then recentFeign[playerGUID] = nil end
+    end
+    local key = NormalizeFeignName(playerName)
+    if key then
+        local t = tonumber(recentFeignByName[key])
+        if t and now - t <= FEIGN_SUPPRESS_SECONDS then return true end
+        if t and now - t > 10 then recentFeignByName[key] = nil end
+    end
+    return false
+end
+
+local function IsMyGroupCombatSource(flags)
+    -- Count damage from this character OR any current party/raid member (and
+    -- their player-controlled pets) toward the 30-second grouped kill window.
+    -- This closes the gap where a nearby party member got the kill but this
+    -- character never personally damaged the victim and PARTY_KILL was absent.
+    local band = bit and bit.band
+    if not band or not flags then return false end
+
+    local mine = COMBATLOG_OBJECT_AFFILIATION_MINE or 0x00000001
+    local party = COMBATLOG_OBJECT_AFFILIATION_PARTY or 0x00000002
+    local raid = COMBATLOG_OBJECT_AFFILIATION_RAID or 0x00000004
+    local controlled = COMBATLOG_OBJECT_CONTROL_PLAYER or 0x00000100
+    local affiliations = mine + party + raid
+
+    return band(flags, affiliations) ~= 0 and band(flags, controlled) ~= 0
+end
 
 local function IsHostilePlayerFlags(flags, guid)
     -- This function sits on the combat-log hot path. Avoid pcall() and filter
@@ -3277,12 +4639,19 @@ end
 
 combatMonitor:SetScript("OnEvent", function(_, event, ...)
     if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
-        combatPlayerGUID = UnitGUID("player") or combatPlayerGUID
+        combatPlayerGUID = VoidMarkForever.API.UnitGUID("player") or combatPlayerGUID
+        C_Timer.After(0, function()
+            RestorePanicVisibility()
+            if UpdatePanicDisplay and GT.PanicFrame and GT.PanicFrame:IsShown() then
+                UpdatePanicDisplay()
+            end
+        end)
         if event == "PLAYER_ENTERING_WORLD" then return end
         RefreshSessionDHK()
         C_Timer.After(2, function()
             ReconcileCurrentCharacterDHKs(false)
             UpdateDisplay()
+            RestorePanicVisibility()
         end)
         return
     end
@@ -3300,6 +4669,7 @@ combatMonitor:SetScript("OnEvent", function(_, event, ...)
         GT._dhkRefreshPending = nil
         ReconcileCurrentCharacterDHKs(true)
         UpdateDisplay()
+        RestorePanicVisibility()
         return
     end
 
@@ -3328,39 +4698,47 @@ combatMonitor:SetScript("OnEvent", function(_, event, ...)
         return
     end
 
-    if event == "PARTY_KILL" then
-        local attackerGUID, targetGUID = ...
-        if not IsPlayerGUID(targetGUID) then return end
-
-        local targetName = nil
-        if VoidMarkForever and VoidMarkForever.ResolvePlayerNameByGUID then
-            targetName = VoidMarkForever.ResolvePlayerNameByGUID(targetGUID)
-        end
-        if not targetName and GetPlayerInfoByGUID then
-            local ok, _, _, _, _, _, name, realm = pcall(GetPlayerInfoByGUID, targetGUID)
-            if ok and name and (not canaccessvalue or canaccessvalue(name)) then
-                targetName = name
-                if realm and realm ~= "" and (not canaccessvalue or canaccessvalue(realm)) then
-                    targetName = name .. "-" .. realm
-                end
-            end
-        end
-        if not targetName then return end
-
-        local known = VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData and VoidMarkPerCharDB.PlayerData[targetName]
-        if not known and not (VoidMarkForever and VoidMarkForever.IsForever) then
-            local base = tostring(targetName):match("^[^-]+")
-            known = base and VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData and VoidMarkPerCharDB.PlayerData[base]
-        end
-        if known and known.isEnemy == false then return end
-
-        GT:RecordKill(targetName, targetGUID)
-        return
-    end
-
     if event == "COMBAT_LOG_EVENT_UNFILTERED" then
-        local _, subEvent, _, sourceGUID, sourceName, sourceFlags, _, destGUID, destName, destFlags =
-            CombatLogGetCurrentEventInfo()
+        local _, subEvent, _, sourceGUID, sourceName, sourceFlags, _, destGUID, destName, destFlags, _, payload1, payload2, payload3, payload4, payload5 =
+            VoidMarkForever.API.CombatLogGetCurrentEventInfo()
+
+        -- Distract (1725) is intentionally unsupported: do not generate alerts
+        -- or pass its combat-log events into the PvP detection path.
+        if tonumber(payload1) == 1725 then return end
+
+        -- Personal Rogue safety alert: only fire when Sap actually lands on us.
+        -- This runs before the normal CLEU fast-return because aura events are
+        -- otherwise intentionally ignored by GankTracker's hot path.
+        if (subEvent == "SPELL_AURA_APPLIED" or subEvent == "SPELL_AURA_REFRESH")
+            and SAP_SPELL_IDS[tonumber(payload1)]
+            and destGUID == (combatPlayerGUID or VoidMarkForever.API.UnitGUID("player")) then
+            ShowSapAlert(sourceName)
+        end
+
+        -- End the warning as soon as Classic exposes Feign ending. Also treat
+        -- a subsequent action by that same Hunter as proof they broke Feign
+        -- (for example standing up to cast/drop a trap) rather than waiting the
+        -- full five-second visual timeout.
+        if subEvent == "SPELL_AURA_REMOVED" and tonumber(payload1) == FEIGN_DEATH_SPELL_ID then
+            ClearHunterFeign(destGUID or sourceGUID, destName or sourceName)
+        elseif sourceGUID and recentFeign[sourceGUID]
+            and subEvent ~= "UNIT_DIED" and subEvent ~= "PARTY_KILL"
+            and not ((subEvent == "SPELL_CAST_SUCCESS" or subEvent == "SPELL_AURA_APPLIED")
+                and tonumber(payload1) == FEIGN_DEATH_SPELL_ID) then
+            ClearHunterFeign(sourceGUID, sourceName)
+        end
+
+        -- Feign Death may have no destination on SPELL_CAST_SUCCESS, so use the
+        -- source hunter there and the destination on AURA_APPLIED. This must run
+        -- before the normal CLEU fast-return below.
+        if (subEvent == "SPELL_CAST_SUCCESS" or subEvent == "SPELL_AURA_APPLIED")
+            and tonumber(payload1) == FEIGN_DEATH_SPELL_ID then
+            local feignGUID = destGUID or sourceGUID
+            local feignName = destName or sourceName
+            MarkHunterFeign(feignGUID, feignName)
+            if feignGUID then recentOutgoingVictims[feignGUID] = nil end
+            return
+        end
 
         local isDamageEvent = (subEvent == "SWING_DAMAGE"
             or subEvent == "RANGE_DAMAGE"
@@ -3376,7 +4754,7 @@ combatMonitor:SetScript("OnEvent", function(_, event, ...)
             return
         end
 
-        local playerGUID = combatPlayerGUID or UnitGUID("player")
+        local playerGUID = combatPlayerGUID or VoidMarkForever.API.UnitGUID("player")
         combatPlayerGUID = playerGUID
 
         -- Existing revenge tracking: hostile player damaged us. Reuse the same
@@ -3393,11 +4771,34 @@ combatMonitor:SetScript("OnEvent", function(_, event, ...)
             lastHostilePlayer.t = GetTime()
         end
 
-        -- Independent gank fallback. VoidMark.lua normally calls GT:RecordKill(), but
-        -- retain recent outgoing player damage here so a missed/broken VoidMark callback
-        -- cannot leave Gank Tracker at zero while VoidMark W/L continues updating.
-        -- Reuse per-victim records to avoid combat-time table churn/GC spikes.
+        -- Hunter-pet tracker. Keep this completely separate from player ganks.
+        -- We only track hostile, player-controlled Beast pets that this character
+        -- actually damaged, so Warlock demons/guardians/NPCs are excluded.
         if sourceGUID == playerGUID
+            and destGUID and destName
+            and isDamageEvent
+            and IsHostilePlayerControlledPetFlags(destFlags) then
+
+            local confirmed = ConfirmHunterPet(destGUID, destFlags)
+            if confirmed then
+                local pet = recentOutgoingHunterPets[destGUID]
+                if not pet then
+                    pet = {}
+                    recentOutgoingHunterPets[destGUID] = pet
+                end
+                pet.name = destName
+                pet.guid = destGUID
+                pet.t = GetTime()
+            end
+        end
+
+        -- Independent grouped-kill fallback. VoidMark.lua normally calls GT:RecordKill(),
+        -- and PARTY_KILL is preferred when Blizzard sends it. Also retain recent
+        -- damage from this character or a nearby party/raid member (including their
+        -- player-controlled pets) so UNIT_DIED can award the grouped kill within
+        -- the existing 30-second window even when PARTY_KILL is absent.
+        -- Reuse per-victim records to avoid combat-time table churn/GC spikes.
+        if IsMyGroupCombatSource(sourceFlags)
             and destGUID and destName
             and IsHostilePlayerFlags(destFlags, destGUID)
             and isDamageEvent then
@@ -3412,22 +4813,109 @@ combatMonitor:SetScript("OnEvent", function(_, event, ...)
             tracked.t = GetTime()
         end
 
+        -- Feign Death is represented by the combat-log "unconsciousOnDeath"
+        -- flag on PARTY_KILL/UNIT_DIED. It can arrive before either normal kill
+        -- path, so suppress it here before any RecordKill() call.
+        if subEvent == "PARTY_KILL"
+            and destGUID and destName and IsPlayerGUID(destGUID)
+            and (payload5 == 1 or payload5 == true or payload5 == "1") then
+            MarkHunterFeign(destGUID, destName)
+            recentOutgoingVictims[destGUID] = nil
+            return
+        end
+
+        if subEvent == "UNIT_DIED"
+            and destGUID and destName and IsPlayerGUID(destGUID)
+            and IsKnownHunter(destName, destGUID) then
+            -- UNIT_DIED alone is ambiguous: real deaths caused by players outside
+            -- our group also arrive without PARTY_KILL. Only stop here when we
+            -- have positive Feign evidence. Otherwise let the normal death/assist
+            -- fallback below evaluate the event.
+            if GT:HandleHunterUnitDied(destGUID, destName) then
+                recentOutgoingVictims[destGUID] = nil
+                return
+            end
+        end
+
+        if subEvent == "UNIT_DIED"
+            and destGUID and destName and IsPlayerGUID(destGUID)
+            and (payload2 == 1 or payload2 == true or payload2 == "1") then
+            MarkHunterFeign(destGUID, destName)
+            recentOutgoingVictims[destGUID] = nil
+            return
+        end
+
+        -- Hunter pet kill credit. PARTY_KILL is authoritative when this character
+        -- is the killer. Never route pet deaths through RecordKill().
+        if subEvent == "PARTY_KILL"
+            and sourceGUID == playerGUID
+            and destGUID and destName
+            and not IsPlayerGUID(destGUID)
+            and IsHostilePlayerControlledPetFlags(destFlags) then
+
+            local trackedPet = recentOutgoingHunterPets[destGUID]
+            if (trackedPet and (GetTime() - (tonumber(trackedPet.t) or 0)) <= 30)
+                or ConfirmHunterPet(destGUID, destFlags) then
+                if RecordHunterPetKill(destName, destGUID) then
+                    UpdateDisplay()
+                end
+            end
+            recentOutgoingHunterPets[destGUID] = nil
+            return
+        end
+
         -- Strongest signal when available: our party received kill credit.
         if subEvent == "PARTY_KILL"
             and destGUID and destName
             and IsPlayerGUID(destGUID)
             and IsHostilePlayerFlags(destFlags, destGUID) then
 
-            GT:RecordKill(destName, destGUID)
+            -- On this Classic Era client, a real Hunter death produces PARTY_KILL
+            -- immediately before UNIT_DIED, while Feign produces UNIT_DIED alone.
+            -- Remember the authoritative real-kill signal so the following
+            -- UNIT_DIED is not mistaken for Feign.
+            ConfirmHunterRealDeath(destGUID, destName)
+            GT:RecordKill(destName, destGUID, sourceGUID == playerGUID)
             recentOutgoingVictims[destGUID] = nil
             return
         end
 
-        -- Catch DoT/assist deaths where PARTY_KILL is absent but we recently
-        -- damaged that hostile player.
+        -- Classic reports Hunter Feign Death as UNIT_DIED traffic, but the death
+        -- payload includes the unconscious/Feign flag. This is the authoritative
+        -- signal for hostile Hunters: no SPELL_AURA_APPLIED is guaranteed for an
+        -- enemy Feign, so trying to detect it only from the spell event misses it.
+        -- payload1 is the recap id; payload2 is the unconscious-on-death flag.
+        if subEvent == "SPELL_INSTAKILL" and destGUID and destName and IsPlayerGUID(destGUID)
+            and (payload5 == true or payload5 == 1 or payload5 == "1") then
+            MarkHunterFeign(destGUID, destName)
+            recentOutgoingVictims[destGUID] = nil
+            return
+        end
+
+        if subEvent == "UNIT_DIED" and destGUID and destName and IsPlayerGUID(destGUID)
+            and (payload2 == true or payload2 == 1 or payload2 == "1") then
+            MarkHunterFeign(destGUID, destName)
+            recentOutgoingVictims[destGUID] = nil
+            return
+        end
+
+        -- Hunter-pet DoT/fallback death when PARTY_KILL is absent.
+        if subEvent == "UNIT_DIED" and destGUID and destName and not IsPlayerGUID(destGUID) then
+            local pet = recentOutgoingHunterPets[destGUID]
+            if pet and (GetTime() - (tonumber(pet.t) or 0)) <= 30 then
+                if RecordHunterPetKill(destName, destGUID) then
+                    UpdateDisplay()
+                end
+            end
+            recentOutgoingHunterPets[destGUID] = nil
+        end
+
+        -- Catch DoT/group-assist deaths where PARTY_KILL is absent but this
+        -- character or a party/raid member damaged that hostile player recently.
         if subEvent == "UNIT_DIED" and destGUID and destName and IsPlayerGUID(destGUID) then
             local tracked = recentOutgoingVictims[destGUID]
-            if tracked and (GetTime() - (tonumber(tracked.t) or 0)) <= 30 then
+            if not GT:IsRecentFeign(destName, destGUID) and not IsUnitCurrentlyFeigningName(destName)
+                and tracked and (GetTime() - (tonumber(tracked.t) or 0)) <= 30 then
                 GT:RecordKill(destName, destGUID)
             end
             recentOutgoingVictims[destGUID] = nil
@@ -3437,6 +4925,21 @@ combatMonitor:SetScript("OnEvent", function(_, event, ...)
     end
 
     if event == "PLAYER_DEAD" then
+        if IgnoreBattlegroundStats() then
+            return
+        end
+        RecordPlayerDeathTimestamp()
+        local endedStreak = tonumber(GT.currentStreak) or 0
+        if GT.partyAnnounce and endedStreak >= 5 then
+            local endedMessage = BuildStreakEndMessage(endedStreak)
+            if endedMessage then
+                C_Timer.After(0.05, function() SafeGroupMessage(endedMessage) end)
+            end
+        end
+
+        if VoidMarkKillEffects and VoidMarkKillEffects.OnPlayerDeath then
+            VoidMarkKillEffects:OnPlayerDeath()
+        end
         SetStreak(0)
 
         if lastHostilePlayer and (GetTime() - (tonumber(lastHostilePlayer.t) or 0)) <= 20 then
@@ -3454,7 +4957,41 @@ end)
 
 UpdateDisplay()
 
+local lastTransientCleanup = 0
+local function PruneTransientCombatState(now)
+    if now-lastTransientCleanup < 30 then return end
+    lastTransientCleanup = now
+    local function PruneTimes(tbl, age)
+        for key, stamp in pairs(tbl) do
+            if now-stamp > age then tbl[key]=nil end
+        end
+    end
+    PruneTimes(GT.recentKillEvents, 30)
+    PruneTimes(GT.recentHunterPetKills, 30)
+    PruneTimes(recentConfirmedPlayerKills, 30)
+    PruneTimes(recentFeign, 30)
+    PruneTimes(recentFeignByName, 30)
+    PruneTimes(recentRemoteSapAlerts, 30)
+    for guid, victim in pairs(recentOutgoingVictims) do
+        if now-(victim.t or 0) > 30 then recentOutgoingVictims[guid]=nil end
+    end
+    for guid, pet in pairs(recentOutgoingHunterPets) do
+        if now-(pet.t or 0) > 30 then recentOutgoingHunterPets[guid]=nil end
+    end
+    for guid in pairs(hunterPetGUIDCache) do
+        if not recentOutgoingHunterPets[guid] then hunterPetGUIDCache[guid]=nil end
+    end
+end
+
 local refreshTicker = C_Timer.NewTicker(1, function()
+    -- Run cache maintenance outside combat, even with all windows closed.
+    if not (InCombatLockdown and InCombatLockdown()) then
+        PruneTransientCombatState(GetTime())
+    end
+    if RestorePanicVisibility then
+        RestorePanicVisibility()
+    end
+
     if GT.Frame and GT.Frame:IsShown() then
         -- Keep the combat log hot path as quiet as possible. Kill/DHK callbacks
         -- already push immediate updates, and PLAYER_REGEN_ENABLED repaints once
@@ -3514,6 +5051,10 @@ SlashCmdList["TALIAAGANK"] = function(msg)
                 .. " - " .. ShortDate((stats.bestWeekEnd or 0) - 1) .. ")"
                 .. " | current week " .. tostring(stats.currentWeek or 0))
         end
+    elseif cmd == "pets" or cmd == "petkills" then
+        Print("Hunter pet kills: Today " .. tostring(HunterPetKillToday())
+            .. " | Week " .. tostring(HunterPetKillWeekly())
+            .. " | Lifetime " .. tostring(HunterPetKillTotal()))
     elseif cmd == "revenge" then
         local count, newest = RevengeCountAndNewest()
         if count == 0 then
@@ -3573,6 +5114,16 @@ SlashCmdList["TALIAAGANK"] = function(msg)
             .. " | start " .. tostring(stats and stats.startTime or 0)
             .. " | total " .. tostring(stats and stats.total or 0)
             .. " | today " .. tostring(GT.totalKills or 0))
+    elseif cmd == "panictest" then
+        local count = tonumber(rest) or 4
+        count = math.max(0, math.min(20, math.floor(count)))
+        if GT.PanicFrame then
+            GT.PanicFrame:Show()
+            if UpdatePanicDisplay then UpdatePanicDisplay(count) end
+            Print("Panic preview: " .. tostring(count) .. " threats. No chat sent and no history changed.")
+        end
+    elseif cmd == "panicstyle" then
+        Print("Panic style is fixed to Banner.")
     elseif cmd == "panic" then
         GT:Panic()
     elseif cmd == "options" or cmd == "opt" then
@@ -3616,8 +5167,8 @@ SlashCmdList["TALIAAGANK"] = function(msg)
             local lookupName = rest
             local lookupGUID = nil
             if string.lower(rest) == "target" then
-                lookupName = UnitName("target")
-                lookupGUID = UnitGUID("target")
+                lookupName = VoidMarkForever.API.UnitName("target")
+                lookupGUID = VoidMarkForever.API.UnitGUID("target")
                 if not lookupName then
                     Print("No target selected.")
                     return
@@ -3628,18 +5179,18 @@ SlashCmdList["TALIAAGANK"] = function(msg)
             Print(BasePlayerName(lookupName) .. ": " .. tostring(total) .. " historical ganks.")
 
             if TaliaaGankRepository.GetHistoricalBreakdown then
-                local repairedTotal, eventRows, voidmarkWins, unresolved, legacyGap, floor, repoAtCapture, voidmarkKey, voidmarkMethod =
+                local repairedTotal, eventRows, spyWins, unresolved, legacyGap, floor, repoAtCapture, spyKey, spyMethod =
                     TaliaaGankRepository:GetHistoricalBreakdown(lookupName, lookupGUID)
                 Print("History source: total " .. tostring(repairedTotal or 0)
                     .. " | repo " .. tostring(eventRows or 0)
                     .. " | legacy gap " .. tostring(legacyGap or 0)
-                    .. " | VoidMark wins " .. tostring(voidmarkWins or 0)
+                    .. " | VoidMark wins " .. tostring(spyWins or 0)
                     .. " | legacy extra " .. tostring(unresolved or 0)
                     .. " | floor " .. tostring(floor or 0)
                     .. " @ repo " .. tostring(repoAtCapture or 0) .. ".")
-                if voidmarkKey or voidmarkMethod then
-                    Print("VoidMark identity: " .. tostring(voidmarkKey or "no match")
-                        .. " (" .. tostring(voidmarkMethod or "none") .. ").")
+                if spyKey or spyMethod then
+                    Print("VoidMark identity: " .. tostring(spyKey or "no match")
+                        .. " (" .. tostring(spyMethod or "none") .. ").")
                 end
             end
         else
@@ -3698,6 +5249,8 @@ SlashCmdList["TALIAAGANK"] = function(msg)
                     .. ". Build the recovery ledger with the v5 BAT.")
             end
         end
+    elseif cmd == "perf" then
+        PrintKillPerf()
     elseif cmd == "show" then
         frame:Show()
         panicFrame:Show()
@@ -3715,10 +5268,15 @@ SlashCmdList["TALIAAGANK"] = function(msg)
             .. " | Lifetime: " .. tostring(lifetime)
             .. " | Unique today: " .. GT.uniqueKills
             .. " | Repeats today: " .. (GT.totalKills - GT.uniqueKills)
+            .. " | Hunter pets today: " .. tostring(HunterPetKillToday())
             .. " | Party: " .. (GT.partyAnnounce and "ON" or "OFF"))
         if TaliaaGankRepository and TaliaaGankRepository.PrintStatus then
             TaliaaGankRepository:PrintStatus()
         end
-        Print("Commands: /tgank build | stats | today | weekly | records | unknown | report | revenge | streak | dhk | options | reset | sessionreset | party | panic | pair | sync | fullsync | repo [name|target|rebuild] | reportdebug | show | hide")
+        Print("Commands: /tgank build | stats | today | weekly | records | pets | unknown | report | revenge | streak | dhk | options | reset | sessionreset | party | panic | pair | sync | fullsync | repo [name|target|rebuild] | reportdebug | perf | show | hide")
     end
 end
+
+-- Client adapters enter the same feature writers as combat-log consumers.
+function GT:RecordHunterPetKill(name,guid) return RecordHunterPetKill(name,guid) end
+function GT:HandleSapAlert(name) return ShowSapAlert(name) end

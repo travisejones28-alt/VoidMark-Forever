@@ -1,3 +1,4 @@
+local VMAPI = VoidMarkForever.API
 -- VoidMark MC Marks
 -- Auto raid-marks enemy players while they are under Priest Mind Control.
 -- Session marks are intentionally not persisted. Position/enabled state are.
@@ -41,9 +42,6 @@ end
 
 local function StripRealm(name)
     name = tostring(name or "?")
-    if VoidMarkForever and VoidMarkForever.IsForever and VoidMarkForever.DisplayName then
-        return VoidMarkForever.DisplayName(name)
-    end
     if Ambiguate then
         name = Ambiguate(name, "none") or name
     end
@@ -91,31 +89,31 @@ local function AuraIsMindControl(scanner, unit)
 end
 
 local function HasMindControlAura(unit)
-    if not unit or not UnitExists(unit) then return false end
-    return AuraIsMindControl(UnitBuff, unit) or AuraIsMindControl(UnitDebuff, unit)
+    if not unit or not VMAPI.UnitExists(unit) then return false end
+    return AuraIsMindControl(VMAPI.UnitBuff, unit) or AuraIsMindControl(VMAPI.UnitDebuff, unit)
 end
 
 local function IsUnitInMyGroup(unit)
-    if not unit or not UnitExists(unit) then return false end
-    if UnitIsUnit(unit, "player") then return true end
+    if not unit or not VMAPI.UnitExists(unit) then return false end
+    if VMAPI.UnitIsUnit(unit, "player") then return true end
 
-    if UnitInParty and UnitInParty(unit) then return true end
-    if UnitInRaid and UnitInRaid(unit) then return true end
+    if VoidMarkForever.API.UnitInParty and VoidMarkForever.API.UnitInParty(unit) then return true end
+    if VoidMarkForever.API.UnitInRaid and VoidMarkForever.API.UnitInRaid(unit) then return true end
 
-    local guid = UnitGUID(unit)
+    local guid = VMAPI.UnitGUID(unit)
     if not guid then return false end
 
     if IsInRaid and IsInRaid() then
         local n = GetNumGroupMembers and GetNumGroupMembers() or 0
         for i = 1, n do
-            if UnitGUID("raid" .. i) == guid then return true end
+            if VMAPI.UnitGUID("raid" .. i) == guid then return true end
         end
     else
         local n = GetNumSubgroupMembers and GetNumSubgroupMembers()
             or (GetNumPartyMembers and GetNumPartyMembers())
             or 0
         for i = 1, n do
-            if UnitGUID("party" .. i) == guid then return true end
+            if VMAPI.UnitGUID("party" .. i) == guid then return true end
         end
     end
 
@@ -123,9 +121,9 @@ local function IsUnitInMyGroup(unit)
 end
 
 local function IsMindControlledEnemyPlayer(unit)
-    if not unit or not UnitExists(unit) then return false end
-    if not UnitIsPlayer(unit) then return false end
-    if UnitIsUnit(unit, "player") then return false end
+    if not unit or not VMAPI.UnitExists(unit) then return false end
+    if not VMAPI.UnitIsPlayer(unit) then return false end
+    if VMAPI.UnitIsUnit(unit, "player") then return false end
     if IsUnitInMyGroup(unit) then return false end
     return HasMindControlAura(unit)
 end
@@ -160,7 +158,7 @@ local function FindUnitByGUID(guid)
     if not guid then return nil end
 
     for _, unit in ipairs(BuildSearchUnits()) do
-        if UnitExists(unit) and UnitGUID(unit) == guid then
+        if VMAPI.UnitExists(unit) and VMAPI.UnitGUID(unit) == guid then
             return unit
         end
     end
@@ -181,9 +179,9 @@ local function IconVisibleOnAnotherUnit(icon, exceptGUID)
     if not GetRaidTargetIndex then return false end
 
     for _, unit in ipairs(BuildSearchUnits()) do
-        if UnitExists(unit)
+        if VMAPI.UnitExists(unit)
             and GetRaidTargetIndex(unit) == icon
-            and UnitGUID(unit) ~= exceptGUID then
+            and VMAPI.UnitGUID(unit) ~= exceptGUID then
             return true
         end
     end
@@ -373,11 +371,14 @@ end
 RefreshBoard = function()
     local frame = EnsureBoard()
 
-    if not DB().enabled then
-        frame:Hide()
+    -- MC marking continues to work in the background, but the MC Marks board
+    -- is intentionally hidden. The user no longer wants this standalone UI.
+    frame:Hide()
+    if true then
         return
     end
 
+    -- Kept below for compatibility/reference if the board is ever re-enabled.
     local list = SortedMarks()
     local count = #list
 
@@ -465,7 +466,7 @@ end
 
 local function TryMarkUnit(unit, reason)
     if not DB().enabled then return false end
-    if not unit or not UnitExists(unit) then return false end
+    if not unit or not VMAPI.UnitExists(unit) then return false end
 
     if not IsMindControlledEnemyPlayer(unit) then
         if reason == "manual" then
@@ -474,8 +475,8 @@ local function TryMarkUnit(unit, reason)
         return false
     end
 
-    local guid = UnitGUID(unit)
-    local name = UnitName(unit)
+    local guid = VMAPI.UnitGUID(unit)
+    local name = VMAPI.UnitName(unit)
     if not guid or not name then return false end
 
     DB().hidden = false
@@ -484,7 +485,7 @@ local function TryMarkUnit(unit, reason)
     if existing then
         existing.mcActive = true
         existing.name = name
-        local _, classFile = UnitClass(unit)
+        local _, classFile = VMAPI.UnitClass(unit)
         existing.class = classFile or existing.class
 
         if existing.icon and SetRaidTarget then
@@ -505,7 +506,7 @@ local function TryMarkUnit(unit, reason)
     if SetRaidTarget then
         ok = pcall(SetRaidTarget, unit, icon)
     end
-    local _, classFile = UnitClass(unit)
+    local _, classFile = VMAPI.UnitClass(unit)
 
     marks[guid] = {
         guid = guid,
@@ -535,7 +536,7 @@ local function ScanMarks()
         return
     end
 
-    if UnitExists("target") and IsMindControlledEnemyPlayer("target") then
+    if VMAPI.UnitExists("target") and IsMindControlledEnemyPlayer("target") then
         TryMarkUnit("target", "auto")
     end
 
@@ -544,8 +545,8 @@ local function ScanMarks()
 
         if unit then
             mark.mcActive = IsMindControlledEnemyPlayer(unit)
-            mark.name = UnitName(unit) or mark.name
-            local _, classFile = UnitClass(unit)
+            mark.name = VMAPI.UnitName(unit) or mark.name
+            local _, classFile = VMAPI.UnitClass(unit)
             mark.class = classFile or mark.class
 
             if mark.mcActive and mark.icon then
@@ -595,8 +596,9 @@ function VoidMarkMCMarks:IsEnabled()
 end
 
 function VoidMarkMCMarks:Show()
-    DB().hidden = false
-    RefreshBoard()
+    -- Standalone MC Marks window is disabled; marking still runs in background.
+    DB().hidden = true
+    if board then board:Hide() end
 end
 
 function VoidMarkMCMarks:Clear()
@@ -604,12 +606,12 @@ function VoidMarkMCMarks:Clear()
 end
 
 local events = CreateFrame("Frame")
-events:RegisterEvent("PLAYER_LOGIN")
-events:RegisterEvent("PLAYER_ENTERING_WORLD")
-events:RegisterEvent("PLAYER_TARGET_CHANGED")
-events:RegisterEvent("UNIT_AURA")
-events:RegisterEvent("UNIT_FLAGS")
-events:RegisterEvent("GROUP_ROSTER_UPDATE")
+VoidMarkForever.RegisterEvent(events,"PLAYER_LOGIN")
+VoidMarkForever.RegisterEvent(events,"PLAYER_ENTERING_WORLD")
+VoidMarkForever.RegisterEvent(events,"PLAYER_TARGET_CHANGED")
+VoidMarkForever.RegisterEvent(events,"UNIT_AURA")
+VoidMarkForever.RegisterEvent(events,"UNIT_FLAGS")
+VoidMarkForever.RegisterEvent(events,"GROUP_ROSTER_UPDATE")
 
 events:SetScript("OnEvent", function(_, event, unit)
     if event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
@@ -629,7 +631,7 @@ events:SetScript("OnEvent", function(_, event, unit)
             return
         end
 
-        local guid = unit and UnitGUID(unit)
+        local guid = unit and VMAPI.UnitGUID(unit)
         if guid and marks[guid] then
             ScanMarks()
         end
@@ -647,7 +649,7 @@ events:SetScript("OnUpdate", function(_, elapsed)
     if not DB().enabled then return end
 
     if next(marks)
-        or (UnitExists("target") and HasMindControlAura("target")) then
+        or (VMAPI.UnitExists("target") and HasMindControlAura("target")) then
         ScanMarks()
     end
 end)

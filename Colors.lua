@@ -1,3 +1,4 @@
+local VMAPI = VoidMarkForever.API
 local Colors = {}
 VoidMark.Colors = Colors
 

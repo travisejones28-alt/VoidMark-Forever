@@ -1,3 +1,4 @@
+local VMAPI = VoidMarkForever.API
 local AceLocale = LibStub("AceLocale-3.0")
 local L = AceLocale:GetLocale("VoidMark")
 local _

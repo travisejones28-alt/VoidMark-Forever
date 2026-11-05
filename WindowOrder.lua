@@ -1,3 +1,4 @@
+local VMAPI = VoidMarkForever.API
 local TopWindow
 local AddToScale = {}
 local AllWindows = {}

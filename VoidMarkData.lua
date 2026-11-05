@@ -1,3 +1,4 @@
+local VMAPI = VoidMarkForever.API
 VoidMarkData = VoidMark:NewModule("VoidMarkData")
 local L = LibStub("AceLocale-3.0"):GetLocale("VoidMark", true)
 
@@ -158,7 +159,7 @@ function VoidMarkData:LogHostilePvpDeath(unit, session) --??
         if TaliaaGankRepository and TaliaaGankRepository.RecordKill and unit.name then
             TaliaaGankRepository:RecordKill(unit.name, unit.guid or unit.GUID, {
                 zone = unit.zone, subZone = unit.subZone, level = unit.level, class = unit.class,
-                killer = UnitName("player") or "?"
+                killer = VMAPI.UnitName("player") or "?"
             })
         end
         VoidMark_db.pvp.outgoing[unit] = nil
@@ -177,7 +178,7 @@ function VoidMarkData:LogMyPvpDeath()
             if TaliaaGankRepository and TaliaaGankRepository.RecordDeath and unit.name then
                 TaliaaGankRepository:RecordDeath(unit.name, unit.guid or unit.GUID, {
                     zone = unit.zone, subZone = unit.subZone, level = unit.level, class = unit.class,
-                    killer = UnitName("player") or "?"
+                    killer = VMAPI.UnitName("player") or "?"
                 })
             end
             VoidMark_db.pvp.outgoing[unit] = nil
