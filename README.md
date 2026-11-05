@@ -24,8 +24,9 @@ live-client testing; automated tests cannot establish server event behavior.
 
 ### Switch an existing repository junction to the current addon
 
-The old root `VoidMark.toc` is a legacy beta port. A junction pointing at the
-repository root loads that old addon, not the canonical subfolder.
+The repository root is now the canonical Forever addon and contains
+`VoidMarkForever.toc` directly. The old nested `VoidMarkForever` folder was removed.
+A junction must use the folder name `VoidMarkForever` in the game's AddOns directory.
 
 Close WoW, pull this repository, then run in PowerShell (as administrator if the
 game folder requires it):
@@ -36,8 +37,9 @@ game folder requires it):
 
 The installer copies old SavedVariables only when the new filename is absent,
 retains originals, creates the `VoidMarkForever` junction, and unlinks only the
-verified old `VoidMark` junction pointing at this repository. It refuses to
-replace unrelated folders. Repeat installs preserve existing saves. Use
+verified old `VoidMark` junction pointing at this repository. It can also
+replace a junction pointing at the obsolete nested folder and backs up regular
+legacy addon folders instead of deleting them. It refuses unrelated junctions. Repeat installs preserve existing saves. Use
 `-ClientRoot` for a different live installation, or `-WhatIf` to inspect the plan.
 Existing `VoidMarkForever.lua` files always win; a newer legacy save needs manual
 review before replacement. The installer does not start an offline watcher.
