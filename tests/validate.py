@@ -4,11 +4,12 @@ Run with Python plus lupa (Lua 5.1 runtime); no WoW installation required.
 from pathlib import Path
 import re,xml.etree.ElementTree as ET
 from lupa.lua51 import LuaRuntime
-ROOT=Path(__file__).resolve().parents[1]/'VoidMarkForever'
+ROOT=Path(__file__).resolve().parents[1]
 LUA=LuaRuntime(unpack_returned_tuples=True)
 compile_lua=LUA.eval('function(s,n) local f,e=loadstring(s,n); return f~=nil,e end')
 count=0
 for p in ROOT.rglob('*.lua'):
+    if any(part in {'tests','tools','dist','.github'} for part in p.relative_to(ROOT).parts): continue
     ok,error=compile_lua(p.read_text(),str(p))
     assert ok,error
     count+=1
@@ -35,6 +36,7 @@ for line in (ROOT/'VoidMarkForever.toc').read_text().splitlines():
     else:loaded.append(p)
 assert len(loaded)==len(set(loaded)),'Duplicated script loading'
 for p in ROOT.rglob('*'):
+    if any(part in {'tests','tools','dist','.github'} for part in p.relative_to(ROOT).parts): continue
     if p.suffix not in ('.lua','.xml'): continue
     text=p.read_text()
     for match in re.finditer(r'Interface(?:\\+|/)Add[Oo]ns(?:\\+|/)VoidMarkForever(?:\\+|/)([A-Za-z0-9_./\\-]+)',text):
