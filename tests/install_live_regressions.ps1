@@ -18,7 +18,8 @@ New-Item -ItemType Junction -Path (Join-Path $addons 'VoidMark') -Target $source
 function Get-Process { @() }
 & (Join-Path $source 'INSTALL_FOREVER_LIVE.ps1') -ClientRoot $client
 if (Test-Path (Join-Path $addons 'VoidMark')) { throw 'Legacy link remains' }
-if (!(Test-Path (Join-Path $source 'VoidMarkForever\VoidMarkForever.toc'))) { throw 'Source was deleted' }
+if (!(Test-Path (Join-Path $addons 'VoidMarkForever\VoidMarkForever.toc'))) { throw 'Flat addon TOC missing' }
+if (!(Test-Path (Join-Path $source 'VoidMarkForever.toc'))) { throw 'Source was deleted' }
 $newSave=Join-Path $saves 'VoidMarkForever.lua'
 if ((Get-Content $newSave -Raw) -notmatch 'retained = 123') { throw 'Save not migrated' }
 Set-Content $newSave 'VoidMarkDB = { retained = 456 }'
