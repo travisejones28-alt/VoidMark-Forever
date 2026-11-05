@@ -30,7 +30,7 @@ for index in range(2):
     ''')
     lua.globals().BNSendGameData=lambda target,prefix,payload,src=index: messages.append((src,int(target)-1,prefix,payload))
     for name in ['Compat/Forever.lua','GankRepository.lua']:
-        lua.execute((ROOT/'VoidMarkForever'/name).read_text())
+        lua.execute((ROOT/name).read_text())
     lua.execute('Emit("PLAYER_LOGIN")')
     lua.execute(f'''
         local s=VoidMarkDB.TaliaaGankSync
