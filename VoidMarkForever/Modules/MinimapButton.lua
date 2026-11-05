@@ -205,8 +205,8 @@ SlashCmdList["VOIDMARKMINIMAP"] = function(msg)
     end
 end
 
-if VoidMark and VoidMark.options and VoidMark.options.args then
-    VoidMark.options.args.minimap = {
+if VoidMark and VoidMark.optionsSlash and VoidMark.optionsSlash.args then
+    VoidMark.optionsSlash.args.minimap = {
         name = "Show Minimap Button",
         desc = "Restore the VoidMark launcher beside the minimap.",
         type = "execute",
