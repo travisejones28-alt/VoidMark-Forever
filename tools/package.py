@@ -4,13 +4,17 @@ import argparse
 import zipfile
 root=Path(__file__).resolve().parents[1]
 addon='VoidMarkForever'
-source=root/'VoidMarkForever'
+source=root
 skip={'.git','.github','tests','Tests','tools','dist','__pycache__'}
+# Only include runtime addon assets; root now also contains repository tooling.
+runtime_dirs={'Libs','Locales','Fonts','Sounds','Textures','Media','Compat','Modules','RunBack'}
+runtime_root={'VoidMarkForever.toc','Embeds.xml','VoidMark.xml','VoidMarkStats.xml'}
 files={}
 for path in source.rglob('*'):
  if not path.is_file(): continue
  relative=path.relative_to(source)
  if any(part in skip or part.startswith('.') for part in relative.parts): continue
+ if relative.parts[0] not in runtime_dirs and not (len(relative.parts)==1 and (path.suffix.lower()=='.lua' or path.name in runtime_root)): continue
  files[addon+'/'+relative.as_posix()]=path
 
 def contents(path):
