@@ -19,8 +19,8 @@ DoEmote = function(token, unit)
 end
 UnitExists = function() return false end
 
-dofile("VoidMarkForever/Compat/Forever.lua")
-dofile("VoidMarkForever/KillEffects.lua")
+dofile("Compat/Forever.lua")
+dofile("KillEffects.lua")
 local KE = assert(VoidMarkKillEffects)
 local db = assert(VoidMarkDB.VoidMarkKillEffects)
 
