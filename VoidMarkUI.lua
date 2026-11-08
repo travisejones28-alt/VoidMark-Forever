@@ -908,7 +908,11 @@ function VM:CreateDetailsFrame()
     f.Location = CreateDetailLabel(f, -152, "Location")
     f.Note = CreateDetailLabel(f, -169, "Note")
 
-    f.TargetButton = CreateFrame("Button", nil, f, "BackdropTemplate")
+    -- Secure button: TargetByName is blocked for addons on Forever.
+    f.TargetButton = CreateFrame("Button", nil, f, "SecureActionButtonTemplate,BackdropTemplate")
+    f.TargetButton:RegisterForClicks("AnyDown", "AnyUp")
+    f.TargetButton:SetAttribute("type1", "macro")
+    f.TargetButton:SetAttribute("macrotext", "/targetexact nil")
     f.TargetButton:SetSize(72, 20)
     f.TargetButton:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", 10, 8)
     f.TargetButton:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 6 })
@@ -917,14 +921,13 @@ function VM:CreateDetailsFrame()
     f.TargetButton.Text = f.TargetButton:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     f.TargetButton.Text:SetAllPoints(f.TargetButton)
     f.TargetButton.Text:SetText("Target")
-    f.TargetButton:SetScript("OnClick", function()
+    -- PreClick only: replacing OnClick would stop the secure macro from running.
+    f.TargetButton:SetScript("PreClick", function(self, button, down)
         local name = f.playerName
-        if not name then return end
-        if InCombatLockdown() then
+        if not name or down then return end
+        if InCombatLockdown() and self.macroFor ~= name then
             UIErrorsFrame:AddMessage("VoidMark: use the Nearby row to target during combat.", 0.75, 0.45, 1.0, 1.0)
-            return
         end
-        if TargetByName then TargetByName(VoidMarkForever.TargetName(name), true) end
     end)
 
     f.NoteButton = CreateFrame("Button", nil, f, "BackdropTemplate")
@@ -984,6 +987,10 @@ function VoidMark:ShowVoidMarkDetails(name)
 
     local f = VM:CreateDetailsFrame()
     f.playerName = name
+    if f.TargetButton and not InCombatLockdown() then
+        f.TargetButton:SetAttribute("macrotext", VoidMarkForever.TargetMacro(name))
+        f.TargetButton.macroFor = name
+    end
 
     local r, g, b = ClassColor(data.class)
     f.Name:SetText(name)

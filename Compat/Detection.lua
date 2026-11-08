@@ -13,7 +13,7 @@ VMF.Interface = tonumber(interfaceVersion) or 0
 VMF.GUIDToName = VMF.GUIDToName or {}
 VMF.NameToGUID = VMF.NameToGUID or {}
 VMF.LastSeen = VMF.LastSeen or {}
-VMF.Build = "1.2.0"
+VMF.Build = "1.2.1"
 
 if not VMF.IsForever then
     return
@@ -123,6 +123,25 @@ end
 
 function VMF.TargetName(name)
     return VMF.DisplayName(name)
+end
+
+-- Secure target macro (same approach as Spy for Forever). Other players often
+-- arrive as "First-Surname" while the client knows them as "First Surname".
+-- Clear the target, then try each form only while nothing is targeted
+-- ([noexists]), so a later line never replaces a player already found.
+function VMF.TargetMacro(name)
+    local s = tostring(name or "")
+    local first, second = s:match("^([^-]+)%-(.+)$")
+    if not first then
+        return "/targetexact " .. s
+    end
+    return table.concat({
+        "/cleartarget",
+        "/targetexact " .. first .. " " .. second,
+        "/targetexact [noexists] " .. s,
+        "/targetexact [noexists] " .. first,
+        "/target [noexists] " .. first .. " " .. second,
+    }, "\n")
 end
 
 function VMF.SamePlayer(a, b)

@@ -73,6 +73,25 @@ assert(VoidMarkPerCharDB.IgnoreData['Enemy-One'],'Control-click lost handler arg
 IsControlKeyDown=function()return false end
 VoidMark:ButtonClicked(row,'RightButton')
 assert(VoidMark.VoidMark.ContextMenu:IsShown(),'Native row action menu unavailable')
+-- Forever targeting: rows fire on press AND release (cast-on-key-down), and the
+-- macro tries "First Surname" before other forms (same approach as Spy).
+assert(row.clicks and row.clicks[1]=='AnyDown' and row.clicks[2]=='AnyUp','Row must register press and release for secure targeting')
+assert(row:GetAttribute('type1')=='macro','Row must be a secure macro button')
+local macro=VoidMarkForever.TargetMacro('Fetto-Vandike')
+assert(macro:find('/cleartarget\n/targetexact Fetto Vandike\n',1,true),'Surname form must be tried first')
+assert(macro:find('/targetexact [noexists] Fetto-Vandike',1,true) and macro:find('/targetexact [noexists] Fetto',1,true),'Fallback forms only while nothing is targeted')
+assert(VoidMarkForever.TargetMacro('Solo')=='/targetexact Solo','Single names stay a single line')
+VoidMark.ButtonName[1]='Fetto-Vandike';row:SetAttribute('macrotext','/targetexact nil')
+row:GetScript('PreClick')(row,'LeftButton',true)
+assert(row:GetAttribute('macrotext')==macro and row:GetAttribute('macrotext1')==macro,'Press refreshes the macro for the shown name')
+VoidMark:ShowVoidMarkDetails('Enemy-One')
+local details=_G.VoidMark_DetailsFrame;assert(details,'Details panel did not open')
+if details then
+ local tb=details.TargetButton
+ assert(tb.clicks and tb.clicks[1]=='AnyDown','Detail Target button must register press and release')
+ assert(tb:GetAttribute('type1')=='macro' and tb:GetAttribute('macrotext')==VoidMarkForever.TargetMacro('Enemy-One'),'Detail Target button must use the secure macro')
+ assert(tb:GetScript('OnClick')==nil,'OnClick must not replace the secure click handler')
+end
 
 -- Persistent HUD stays below ordinary MEDIUM application windows, even after raise/show.
 assert(VoidMark.MainWindow:GetFrameStrata()=="LOW","Compact HUD must be below normal windows")

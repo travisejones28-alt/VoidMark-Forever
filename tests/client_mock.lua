@@ -74,6 +74,7 @@ obj=function(name)
    GetFont=function()return "font",12,"" end,GetStringWidth=function()return 100 end,GetText=function(s)return s.text or "" end,
    SetText=function(s,v)s.text=v end,GetFontString=function(s)s.fs=s.fs or obj();return s.fs end,
    SetAttribute=function(s,k,v)s.attributes[k]=v end,GetAttribute=function(s,k)return s.attributes[k] end,
+   RegisterForClicks=function(s,...)s.clicks={...} end,
    CreateTexture=function(_,n)return obj(n) end,CreateFontString=function(_,n)return obj(n) end,
    GetNumPoints=function()return 1 end,GetChecked=function()return false end,GetValue=function()return 1 end,
    GetRegions=function()return obj(),obj(),obj() end,GetChildren=function()return obj(),obj() end,

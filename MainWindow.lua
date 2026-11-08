@@ -166,8 +166,10 @@ function VoidMark:CreateRow(num)
 	row.VoidMarkCombatFlash:Hide()
 
 	-- TaliaaVoidMark: secure targeting is configured OUTSIDE combat.
-	-- We never change secure attributes from the click handler.
-	row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	-- Forever fires secure buttons on the PRESS when "cast on key down" is on,
+	-- so a row registered for release only never targeted anyone. Listen to
+	-- both phases (as Spy does); menus/modifiers still act on release only.
+	row:RegisterForClicks("AnyDown", "AnyUp")
 	row:SetAttribute("type1", "macro")
 	row:SetAttribute("macro", nil)
 	row:SetAttribute("macrotext1", "/targetexact nil")
@@ -183,6 +185,15 @@ function VoidMark:CreateRow(num)
 	-- its protected target action as part of the secure click path.
 	-- Replacing OnClick can prevent that secure action from firing.
 	row:SetScript("PreClick", function(self, button, down)
+		-- Refresh the macro for the name shown right now (out of combat only).
+		local shown = VoidMark.ButtonName and VoidMark.ButtonName[self.id]
+		if button == "LeftButton" and shown and shown ~= "" and not InCombatLockdown() then
+			local macro = VoidMarkForever.TargetMacro(shown)
+			if self:GetAttribute("macrotext") ~= macro then
+				self:SetAttribute("macrotext1", macro)
+				self:SetAttribute("macrotext", macro)
+			end
+		end
 		-- Both phases are registered for secure targeting. Run menu/modifier
 		-- actions only on release so one click cannot toggle a setting twice.
 		if down then return end
@@ -942,8 +953,8 @@ function VoidMark:SetBar(num, name, desc, value, colorgroup, colorclass, tooltip
 	-- During combat, leave the last secure value untouched.
 	if not InCombatLockdown() then
 		Row:SetAttribute("macro", nil)
-		Row:SetAttribute("macrotext1", "/targetexact " .. VoidMarkForever.TargetName(name))
-		Row:SetAttribute("macrotext", "/targetexact " .. VoidMarkForever.TargetName(name))
+		Row:SetAttribute("macrotext1", VoidMarkForever.TargetMacro(name))
+		Row:SetAttribute("macrotext", VoidMarkForever.TargetMacro(name))
 	end
 
 	Row.LeftText:SetWidth(Row:GetWidth() - Row.RightText:GetStringWidth() - 4)
