@@ -109,3 +109,5 @@ Install the pinned test runtime with `python -m pip install -r tests/requirement
 ## 1.1.1
 
 The compact VoidMark HUD now uses the LOW UI layer, below normal MEDIUM windows such as Nexus and bags. Showing or raising the tracker inside VoidMark's own window stack preserves that layer. Configuration dialogs and context menus retain their existing layers.
+
+<!-- VoidMark Updater test: 2026-11-11. Harmless documentation-only commit; remove this line to revert the test. -->
