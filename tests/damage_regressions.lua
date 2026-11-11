@@ -85,3 +85,14 @@ CLEU=nil
 
 IsInGroup,IsCurrentSpell=oldGroup,oldCurrent
 print('PASS: Forever damage records from target damage (casts, channels, melee, groups, secrets, no double count)')
+-- Probe must run safely even when the client blocks everything.
+local printed={}
+local oldAdd=DEFAULT_CHAT_FRAME.AddMessage
+DEFAULT_CHAT_FRAME.AddMessage=function(_,m) printed[#printed+1]=m end
+CLEU=nil
+SlashCmdList.VOIDMARKDAMAGE('probe')
+local text=table.concat(printed,'\n')
+assert(text:find('combat log getter: blocked'),'probe did not report blocked combat log')
+assert(text:find('Listening 25 seconds'),'probe did not arm listeners')
+DEFAULT_CHAT_FRAME.AddMessage=oldAdd
+print('PASS: /vmdmg probe reports client capabilities without errors')

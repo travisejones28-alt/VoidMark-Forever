@@ -366,10 +366,79 @@ eventFrame:SetScript("OnEvent", function(_, event, ...)
     end
 end)
 
+-- /vmdmg probe: find out which damage sources this client lets addons read.
+-- Prints a static report, then listens for 25 seconds while the player hits
+-- their target and reports which events fired with readable numbers.
+local probeFrame
+local function P(msg) DEFAULT_CHAT_FRAME:AddMessage("|cffb86cff[VoidMark probe]|r " .. tostring(msg)) end
+local function Show(v)
+    if F.Readable(v) == nil and v ~= nil then return "SECRET" end
+    if v == nil then return "nil" end
+    return tostring(v)
+end
+local function Keys(t)
+    local out = {}
+    if type(t) == "table" then for k in pairs(t) do out[#out + 1] = tostring(k) end end
+    table.sort(out)
+    return #out > 0 and table.concat(out, ", ") or "(none)"
+end
+function DR:Probe()
+    local build, number = F.Safe(GetBuildInfo)
+    P("client " .. Show(build) .. " build " .. Show(number))
+    local ok, a, b = pcall(CombatLogGetCurrentEventInfo or function() error("missing") end)
+    P("combat log getter: " .. (ok and ("ok, event=" .. Show(b)) or ("blocked (" .. tostring(a):sub(1, 60) .. ")")))
+    P("C_DamageMeter: " .. (type(C_DamageMeter) == "table" and Keys(C_DamageMeter) or "not present"))
+    P("C_CombatLog: " .. (type(C_CombatLog) == "table" and Keys(C_CombatLog) or "not present"))
+    if F.Safe(UnitExists, "target") then
+        P("target health: " .. Show(UnitHealth and select(2, pcall(UnitHealth, "target")))
+            .. " / " .. Show(UnitHealthMax and select(2, pcall(UnitHealthMax, "target"))))
+    else
+        P("target health: no target - target something and run /vmdmg probe again")
+    end
+    if not probeFrame then
+        probeFrame = CreateFrame("Frame")
+        probeFrame.seen = {}
+        probeFrame:SetScript("OnEvent", function(self, event, ...)
+            if not self.active then return end
+            local n = (self.seen[event] or 0) + 1; self.seen[event] = n
+            if n > 3 then return end
+            local parts = {}
+            for i = 1, math.min(select("#", ...), 6) do parts[#parts + 1] = Show((select(i, ...))) end
+            local extra = ""
+            if event == "UNIT_HEALTH" and (...) == "target" then
+                extra = "  health=" .. Show(select(2, pcall(UnitHealth, "target")))
+            end
+            P(event .. ": " .. table.concat(parts, " | ") .. extra)
+        end)
+    end
+    local events = {"UNIT_HEALTH","UNIT_COMBAT","COMBAT_TEXT_UPDATE","CHAT_MSG_COMBAT_SELF_HITS",
+        "CHAT_MSG_SPELL_SELF_DAMAGE","CHAT_MSG_SPELL_PERIODIC_CREATURE_DAMAGE","CHAT_MSG_COMBAT_XP_GAIN",
+        "DAMAGE_METER_COMBAT_SESSION_UPDATED","DAMAGE_METER_CURRENT_SESSION_UPDATED","PLAYER_REGEN_ENABLED"}
+    local refused = {}
+    for _, ev in ipairs(events) do
+        local okReg = pcall(probeFrame.RegisterEvent, probeFrame, ev)
+        if not okReg then refused[#refused + 1] = ev end
+    end
+    P("events refused by client: " .. (#refused > 0 and table.concat(refused, ", ") or "none"))
+    probeFrame.seen = {}; probeFrame.active = true
+    P("Listening 25 seconds - attack your target with a few spells and melee now.")
+    if C_Timer and C_Timer.After then
+        C_Timer.After(25, function()
+            probeFrame.active = false
+            local fired = {}
+            for ev, n in pairs(probeFrame.seen) do fired[#fired + 1] = ev .. " x" .. n end
+            P("done. fired: " .. (#fired > 0 and table.concat(fired, ", ") or "nothing"))
+            P("Screenshot these lines and send them to the owner.")
+        end)
+    end
+end
+
 SLASH_VOIDMARKDAMAGE1 = "/vmdmg"
 SlashCmdList.VOIDMARKDAMAGE = function(msg)
     msg = tostring(msg or ""):lower():match("^%s*(.-)%s*$")
-    if msg == "debug" then
+    if msg == "probe" then
+        DR:Probe()
+    elseif msg == "debug" then
         DR.debug = not DR.debug
         DEFAULT_CHAT_FRAME:AddMessage("|cffb86cff[VoidMark]|r Damage debug " .. (DR.debug and "ON - hit a target to see what is recorded." or "OFF"))
     else
@@ -474,7 +543,7 @@ local function BuildUI()
     close:SetPoint("TOPRIGHT", -3, -3)
 
     frame.CharacterLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    frame.CharacterLabel:SetPoint("TOPRIGHT", close, "TOPLEFT", -4, -11)
+    frame.CharacterLabel:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -20, -48)
     frame.CharacterLabel:SetJustifyH("RIGHT")
 
     frame.Dropdown = CreateFrame("Frame", "VoidMarkDamageRecordsDropdown", frame, "UIDropDownMenuTemplate")
