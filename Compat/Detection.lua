@@ -13,7 +13,7 @@ VMF.Interface = tonumber(interfaceVersion) or 0
 VMF.GUIDToName = VMF.GUIDToName or {}
 VMF.NameToGUID = VMF.NameToGUID or {}
 VMF.LastSeen = VMF.LastSeen or {}
-VMF.Build = "1.2.1"
+VMF.Build = "1.2.2"
 
 if not VMF.IsForever then
     return
@@ -226,11 +226,18 @@ function VoidMark:ScanUnit(unit)
     VMF.Stats.scans = (VMF.Stats.scans or 0) + 1
     CacheIdentity(unit,name)
     VMF.LastDetection=VMF.LastDetection or {}
+    VMF.LastDetectionEnemy=VMF.LastDetectionEnemy or {}
     local seen=VMF.LastDetection[name]
-    if seen and GetTime()-seen<10 then return name end
+    if seen and GetTime()-seen<10 then
+        -- Cached rescan: only report the name if it was an enemy last time.
+        -- Returning it for self/friendly units made own Stealth alert.
+        if VMF.LastDetectionEnemy[name] then return name end
+        return nil
+    end
     VMF.LastDetection[name]=GetTime()
     local playerData = KnownPlayerData(name)
     local isEnemy = VoidMark:Readable(SafeCall(VMAPI.UnitIsEnemy, "player", unit))
+    VMF.LastDetectionEnemy[name] = isEnemy == true
 
     if isEnemy then
         local learnt = true
@@ -343,6 +350,12 @@ local function HandleForeverSpellcast(unit, spellID)
     -- be compared, concatenated, converted into a normal lookup key, or used to
     -- index a Lua table. Detect the caster first, then discard an unreadable ID.
     if type(unit) ~= "string" or unit == "" then return end
+
+    -- Never alert on yourself or your group, whatever unit token Forever uses.
+    if unit == "player" or unit == "vehicle" or unit == "pet"
+        or unit:find("^party") or unit:find("^raid") then return end
+    if VoidMark:Readable(SafeCall(VMAPI.UnitIsUnit, unit, "player")) == true then return end
+    if VoidMark:Readable(SafeCall(VMAPI.UnitIsEnemy, "player", unit)) ~= true then return end
 
     local name = VMF.ScanUnit(unit)
     if not name then return end
