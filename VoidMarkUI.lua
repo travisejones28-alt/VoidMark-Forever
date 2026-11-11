@@ -239,11 +239,6 @@ local function BuildGearMenu(self, level)
             VoidMarkKillEffects:ToggleOptions()
         end
     end)
-    Add("Damage Records", function()
-        if VoidMarkDamageRecords and VoidMarkDamageRecords.Toggle then
-            VoidMarkDamageRecords:Toggle()
-        end
-    end)
     local enemyMovesEnabled = VoidMarkEnemyMoves
         and VoidMarkEnemyMoves.IsEnabled
         and VoidMarkEnemyMoves:IsEnabled()

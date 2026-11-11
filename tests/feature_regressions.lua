@@ -105,26 +105,6 @@ repo:Unpair()
 assert(not sync.peerGameAccountID and not sync.lastKnownPeerGameAccountID,"unpair retained peer link")
 eq(repo:GetHistoricalCount("Enemy-One","Player-1-enemy"),history,"pairing migration changed history")
 
--- Suppressing the damage popup still records/announces new personal records.
-VoidMarkDamageRecords:Toggle()
-local damageFrame=VoidMarkDamageRecordsFrame
-local damage=VoidMarkDB.VoidMarkDamageRecords
-if damage.showPopup then damageFrame.PopupButton:GetScript("OnClick")() end
-eq(damage.showPopup,false,"popup toggle off")
-local popup
-for _,frame in ipairs(TEST_FRAMES) do
-    if rawget(frame,"Title") and frame.Title:GetText()=="NEW HIGH HIT" then popup=frame end
-end
-assert(popup and not popup:IsShown(),"toggle did not hide active popup")
-CLEU={NOW,"SPELL_DAMAGE",false,"Player-1-hero","Hero-One",0,0,"Creature-1-x","Boar",0,0,8092,"Mind Blast",32,1200,0,0,0,0,0,false}
-F.ProbeCombatLog()
-Emit("COMBAT_LOG_EVENT_UNFILTERED")
-eq(damage.characters["Hero-One-TestRealm"].records["SPELL:8092"].amount,1200,"popup off disabled damage tracking")
-assert(not popup:IsShown(),"popup off still displayed a banner")
-damageFrame.PopupButton:GetScript("OnClick")()
-CLEU[15]=1300
-Emit("COMBAT_LOG_EVENT_UNFILTERED")
-assert(popup:IsShown(),"popup on did not display new record")
 CLEU=nil
 assert(VoidMarkEnemyMovesFrame:GetFrameStrata()=="LOW","Enemy Moves can cover stock bags")
 

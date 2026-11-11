@@ -22,21 +22,15 @@ VoidMarkForever.RecordLoss('Enemy-One','Player-1-enemy')
 local loses=d.loses
 VoidMarkForever.RecordLoss('Enemy-One','Player-1-enemy')
 assert(d.loses==loses,'Duplicate loss counted')
--- Recording damage requires a readable combat event attributable to this player.
+-- A combat event carrying any secret value is never accepted.
 CLEU={NOW,'SPELL_DAMAGE',false,'Player-1-hero','Hero-One',0,0,'Creature-1-x','Boar',0,0,8092,'Mind Blast',32,911,0,0,0,0,0,false}
 VoidMarkForever.ProbeCombatLog()
 Emit('COMBAT_LOG_EVENT_UNFILTERED')
-local damage=VoidMarkDB.VoidMarkDamageRecords
-assert(damage.characters['Hero-One-TestRealm'].records['SPELL:8092'].amount==911,'Damage record absent')
-local namefn=UnitName
-UnitName=function(u)if u=='player' then return 'Rogue','Two' end return namefn(u)end
-CLEU[12]=1752;CLEU[13]='Sinister Strike';CLEU[15]=500
-Emit('COMBAT_LOG_EVENT_UNFILTERED')
-assert(not damage.characters['Rogue-Two-TestRealm'].records['SPELL:8092'],'Character damage records leaked')
 CLEU[12]=SECRET
 Emit('COMBAT_LOG_EVENT_UNFILTERED')
 assert(not VoidMarkForever.Capabilities.combatLog,'Secret event accepted')
-UnitName=namefn
+-- Damage Records was removed (Forever hides damage from addons); old saved data stays untouched.
+assert(VoidMarkDamageRecords==nil and VoidMarkDamageRecordsFrame==nil,'Damage Records still loaded')
 -- Stale UI scores are reconciled from the existing history on the next sighting.
 d.wins=0
 VoidMarkForever.LastDetection['Enemy-One']=nil

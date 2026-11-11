@@ -79,7 +79,6 @@ Drain()
 LUA.execute((Path(__file__).parent/'regressions.lua').read_text())
 LUA.execute((Path(__file__).parent/'feature_regressions.lua').read_text())
 LUA.execute((Path(__file__).parent/'live_regressions.lua').read_text())
-LUA.execute((Path(__file__).parent/'damage_regressions.lua').read_text())
 # Audio settings and cancellation run in isolation, using the real module.
 audio=LuaRuntime(unpack_returned_tuples=True)
 audio.execute((Path(__file__).parent/'kill_effects_regression.lua').read_text())
