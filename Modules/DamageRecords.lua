@@ -1,4 +1,5 @@
 local VMAPI = VoidMarkForever.API
+local F = VoidMarkForever
 -- VoidMark Damage Records
 -- Lightweight highest-hit tracker. Keeps one record per ability; no hit history.
 VoidMarkDamageRecords = VoidMarkDamageRecords or {}
@@ -133,9 +134,10 @@ local function IconTag(record)
     return "|T" .. tostring(icon) .. ":16:16:0:0|t "
 end
 
+-- Forever names are "First Surname"; FullName stores them as "First-Surname".
 local function ShortTarget(name)
     name = tostring(name or "Unknown")
-    return name:match("^([^-]+)") or name
+    return (name:gsub("%-", " ", 1))
 end
 
 local function SelfNotice(record)
@@ -219,7 +221,7 @@ local function SaveRecord(kind, spellID, spellName, amount, critical, destGUID, 
         time = GetServerTime and GetServerTime() or time(),
         zone = zone,
         subZone = sub,
-        character = tostring(VMAPI.UnitName("player") or "?"),
+        character = ShortTarget((CurrentCharacter())),
         realm = tostring(GetRealmName and GetRealmName() or "?"),
     }
     cdb.records[key] = record
@@ -245,14 +247,106 @@ local function SaveRecord(kind, spellID, spellName, amount, critical, destGUID, 
     if DR.Refresh then DR:Refresh() end
 end
 
+-- Sources -------------------------------------------------------------------
+-- 1) Combat log, when the client exposes readable events (Classic-style).
+-- 2) Forever fallback: the combat log is secret on Forever, so watch damage the
+--    current TARGET takes (UNIT_COMBAT) and credit it to the player only when it
+--    lines up with the player's own cast, channel or melee swing. DoT ticks and
+--    pet damage can't be attributed this way and are not recorded.
+DR.source = "none"          -- "combatlog" | "target" | "none"
+DR.hidden = false           -- client returned secret damage values
+DR.debug = false
+local lastCLEU = 0
+local lastCast, channel     -- {id,name,icon,at,used}
+local CAST_WINDOW = 1.3     -- seconds from cast success to first hit (travel time)
+
+local function Debug(msg)
+    if DR.debug then DEFAULT_CHAT_FRAME:AddMessage("|cffb86cff[VoidMark dmg]|r " .. tostring(msg)) end
+end
+
+local function Grouped()
+    return (IsInGroup and IsInGroup()) or (IsInRaid and IsInRaid()) or false
+end
+
+local function AutoAttacking()
+    local fn = (C_Spell and C_Spell.IsCurrentSpell) or IsCurrentSpell
+    return F.Safe(fn, 6603) and true or false
+end
+
+local function CastInfo(spellID)
+    spellID = tonumber(F.Readable(spellID))
+    if not spellID or spellID == 6603 then return nil end
+    local name, icon = SpellInfoSafe(spellID, nil)
+    return { id = spellID, name = name, icon = icon, at = GetTime(), used = false }
+end
+
+local function OnTargetDamage(unit, action, flag, amount)
+    if unit ~= "target" then return end
+    -- If the readable combat log is working, it already recorded this hit.
+    if GetTime() - lastCLEU < 5 then return end
+    action, flag, amount = F.Readable(action), F.Readable(flag), F.Readable(amount)
+    if action == nil or amount == nil then
+        if not DR.hidden then DR.hidden = true; Debug("damage values are hidden by the client"); if DR.Refresh then DR:Refresh() end end
+        return
+    end
+    if action ~= "WOUND" then return end
+    amount = tonumber(amount)
+    if not amount or amount <= 0 then return end
+    if not F.Safe(UnitCanAttack, "player", "target") then return end
+    local guid = F.Safe(UnitGUID, "target")
+    local name = F.FullName("target") or "Unknown"
+    local crit = flag == "CRITICAL"
+    local now = GetTime()
+    local solo = not Grouped()
+
+    if channel and (solo or not channel.used) then
+        -- Channel ticks (e.g. Mind Flay). In a group only the first tick counts,
+        -- so other players' hits during a long channel can't be credited.
+        channel.used = true
+        Debug(("%s tick %d"):format(channel.name, amount))
+        DR.source = "target"
+        SaveRecord("SPELL", channel.id, channel.name, amount, crit, guid, name)
+    elseif lastCast and not lastCast.used and now - lastCast.at <= CAST_WINDOW then
+        lastCast.used = true      -- one hit per cast
+        Debug(("%s hit %d"):format(lastCast.name, amount))
+        DR.source = "target"
+        SaveRecord("SPELL", lastCast.id, lastCast.name, amount, crit, guid, name)
+    elseif solo and AutoAttacking() then
+        Debug(("melee %d"):format(amount))
+        DR.source = "target"
+        SaveRecord("SWING", nil, "Melee", amount, crit, guid, name)
+    else
+        Debug(("skipped %d (not clearly yours)"):format(amount))
+    end
+end
+
 local eventFrame = CreateFrame("Frame")
 VoidMarkForever.RegisterEvent(eventFrame,"PLAYER_LOGIN")
 VoidMarkForever.RegisterEvent(eventFrame,"COMBAT_LOG_EVENT_UNFILTERED")
-eventFrame:SetScript("OnEvent", function(_, event)
+for _, ev in ipairs({"UNIT_COMBAT","UNIT_SPELLCAST_SUCCEEDED","UNIT_SPELLCAST_CHANNEL_START","UNIT_SPELLCAST_CHANNEL_STOP","PLAYER_TARGET_CHANGED"}) do
+    VoidMarkForever.RegisterEvent(eventFrame, ev)
+end
+eventFrame:SetScript("OnEvent", function(_, event, ...)
     if event == "PLAYER_LOGIN" then
         DB()
         return
     end
+    if event == "UNIT_COMBAT" then return OnTargetDamage(...) end
+    if event == "UNIT_SPELLCAST_SUCCEEDED" then
+        local unit, _, spellID = ...
+        if unit == "player" then local c = CastInfo(spellID); if c then lastCast = c end end
+        return
+    end
+    if event == "UNIT_SPELLCAST_CHANNEL_START" then
+        local unit, _, spellID = ...
+        if unit == "player" then channel = CastInfo(spellID) end
+        return
+    end
+    if event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+        if (...) == "player" then channel = nil end
+        return
+    end
+    if event == "PLAYER_TARGET_CHANGED" then lastCast = nil; return end
     if event ~= "COMBAT_LOG_EVENT_UNFILTERED" or not VMAPI.CombatLogGetCurrentEventInfo then return end
 
     local info = { VMAPI.CombatLogGetCurrentEventInfo() }
@@ -262,13 +356,26 @@ eventFrame:SetScript("OnEvent", function(_, event)
 
     if subevent == "SWING_DAMAGE" then
         -- SWING_DAMAGE: amount=12, critical=18.
+        lastCLEU = GetTime(); DR.source = "combatlog"
         SaveRecord("SWING", nil, "Melee", info[12], info[18], info[8], info[9])
     elseif subevent == "SPELL_DAMAGE" or subevent == "SPELL_PERIODIC_DAMAGE"
         or subevent == "RANGE_DAMAGE" then
         -- SPELL/RANGE damage: spellId=12, spellName=13, amount=15, critical=21.
+        lastCLEU = GetTime(); DR.source = "combatlog"
         SaveRecord("SPELL", info[12], info[13], info[15], info[21], info[8], info[9])
     end
 end)
+
+SLASH_VOIDMARKDAMAGE1 = "/vmdmg"
+SlashCmdList.VOIDMARKDAMAGE = function(msg)
+    msg = tostring(msg or ""):lower():match("^%s*(.-)%s*$")
+    if msg == "debug" then
+        DR.debug = not DR.debug
+        DEFAULT_CHAT_FRAME:AddMessage("|cffb86cff[VoidMark]|r Damage debug " .. (DR.debug and "ON - hit a target to see what is recorded." or "OFF"))
+    else
+        DR:Toggle()
+    end
+end
 
 local frame
 local selectedKey = "__OVERALL"
@@ -301,7 +408,16 @@ function DR:Refresh()
     frame.PartyButton.Text:SetText(db.partyAnnounce and "PARTY ANNOUNCE: ON" or "PARTY ANNOUNCE: OFF")
     frame.PopupButton.Text:SetText(db.showPopup and "POPUP: ON" or "POPUP: OFF")
     if frame.CharacterLabel then
-        frame.CharacterLabel:SetText("CHARACTER: " .. tostring(charName))
+        frame.CharacterLabel:SetText("CHARACTER: " .. ShortTarget(charName))
+    end
+    if frame.Source then
+        if DR.source == "combatlog" then
+            frame.Source:SetText("|cff8f8f8fTracking: combat log|r")
+        elseif DR.hidden and DR.source ~= "target" then
+            frame.Source:SetText("|cffff7777This client hides damage numbers from addons - records can't update.|r")
+        else
+            frame.Source:SetText("|cff8f8f8fTracking: hits on your target (casts, channels, melee). DoTs/pets not counted.|r")
+        end
     end
     -- A previously selected spell can disappear after changing characters or
     -- after manual SavedVariables editing. Fall back cleanly.
@@ -317,7 +433,7 @@ function DR:Refresh()
         frame.Icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
         frame.Ability:SetText("No damage records yet")
         frame.Amount:SetText("—")
-        frame.Meta:SetText("Your first outgoing damage event will create a record.")
+        frame.Meta:SetText("Hit something you have targeted to create a record.")
         frame.Location:SetText("")
         return
     end
@@ -334,7 +450,7 @@ end
 local function BuildUI()
     if frame then return end
     frame = CreateFrame("Frame", "VoidMarkDamageRecordsFrame", UIParent, "BackdropTemplate")
-    frame:SetSize(470, 235)
+    frame:SetSize(470, 255)
     frame:SetPoint("CENTER")
     frame:SetFrameStrata("DIALOG")
     frame:SetMovable(true)
@@ -407,6 +523,11 @@ local function BuildUI()
     frame.Location:SetPoint("TOPLEFT", frame.Meta, "BOTTOMLEFT", 0, -7)
     frame.Location:SetPoint("RIGHT", -20, 0)
     frame.Location:SetJustifyH("LEFT")
+
+    frame.Source = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    frame.Source:SetPoint("BOTTOMLEFT", 20, 44)
+    frame.Source:SetPoint("RIGHT", -20, 0)
+    frame.Source:SetJustifyH("LEFT")
 
     frame.PartyButton = CreateFrame("Button", nil, frame, "BackdropTemplate")
     frame.PartyButton:SetSize(180, 24)
