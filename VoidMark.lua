@@ -1901,6 +1901,10 @@ function VoidMark:OnInitialize()
 	if VoidMark.WoWBuildInfo > 20000 then
 		DEFAULT_CHAT_FRAME:AddMessage(L["VersionCheck"])
 	end
+	-- 1.2.7: fold "First Surname" death-recap records into "First-Surname".
+	if VoidMarkForever and VoidMarkForever.MergeSpacedPlayerRecords and VoidMarkPerCharDB then
+		pcall(VoidMarkForever.MergeSpacedPlayerRecords)
+	end
 end
 
 function VoidMark:ChannelNoticeEvent(_, chStatus, _, _, Channel)
@@ -3000,7 +3004,15 @@ end
 function VoidMark:FormatTime(timestamp)
     if timestamp == 0 then return "Long " end
 
-    local age = time() - timestamp
+    -- Records use server time (repository) or the PC clock (PlayerData); a PC
+    -- clock behind the server showed negative ages ("-494s"). Use the later of
+    -- the two clocks and never show a negative age.
+    local now = time()
+    if GetServerTime then
+        local s = tonumber(GetServerTime())
+        if s and s > now then now = s end
+    end
+    local age = math.max(0, now - timestamp)
 
     local days
     if age >= 86400 then

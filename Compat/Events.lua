@@ -63,8 +63,59 @@ function F.HandlePartyKill(attackerGUID,targetGUID,unconscious)
     -- synthesized combat-log death or damage attribution.
     if A.db then A:CombatEvent(GetTime(),"PARTY_KILL",false,attackerGUID,nil,0x101,nil,targetGUID,name,0x540,nil) end
 end
+-- VoidMark keys players as "First-Surname" (UnitName gives the surname as a
+-- second value). The death recap names the killer "First Surname" with a
+-- space, which used to start a second record: the loss never showed on the
+-- player's own row. Use the GUID's known name, else turn the space into "-".
+function F.CanonicalName(name,guid)
+    if type(name)~="string" then return name end
+    local known=guid and F.GUIDToName and F.GUIDToName[guid]
+    if type(known)=="string" and known~="" then return known end
+    if not name:find("-",1,true) then
+        local first,rest=name:match("^(%S+) (.+)$")
+        if first then return first.."-"..rest end
+    end
+    return name
+end
+-- One-time repair: fold "First Surname" records into "First-Surname".
+function F.MergeSpacedPlayerRecords()
+    local db=VoidMarkPerCharDB
+    local data=db and db.PlayerData
+    if type(data)~="table" then return 0 end
+    local merged=0
+    local spaced={}
+    for key in pairs(data) do
+        if type(key)=="string" and not key:find("-",1,true) and key:find(" ",1,true) then spaced[#spaced+1]=key end
+    end
+    for _,key in ipairs(spaced) do
+        local src=data[key]
+        local target=F.CanonicalName(key,type(src)=="table" and src.guid or nil)
+        if target~=key and type(src)=="table" then
+            local dst=data[target]
+            if type(dst)~="table" then
+                src.name=target;data[target]=src
+            else
+                dst.wins=(tonumber(dst.wins) or 0)+(tonumber(src.wins) or 0)
+                dst.loses=(tonumber(dst.loses) or 0)+(tonumber(src.loses) or 0)
+                for k,v in pairs(src) do if dst[k]==nil and k~="name" then dst[k]=v end end
+                if (tonumber(src.time) or 0)>(tonumber(dst.time) or 0) then dst.time=src.time end
+            end
+            data[key]=nil
+            for _,list in ipairs({"KOSData","IgnoreData"}) do
+                local t=db[list]
+                if type(t)=="table" and t[key]~=nil then
+                    if t[target]==nil then t[target]=t[key] end
+                    t[key]=nil
+                end
+            end
+            merged=merged+1
+        end
+    end
+    return merged
+end
 function F.RecordLoss(name,guid)
     if not IsPlayer(guid) or type(name)~="string" then return end
+    name=F.CanonicalName(name,guid)
     if lossAt>0 and GetTime()-lossAt<6 then return end
     lossAt=GetTime()
     local data=VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData

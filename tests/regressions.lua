@@ -143,3 +143,26 @@ main:SetWidth(250);VoidMark:SaveMainWindowPosition()
 VoidMark:HandleProfileChanges()
 assert(main:GetWidth()==250,"Custom width below maximum did not survive restoration")
 print("PASS: visible artwork, 400-unit width maximum and custom width restoration")
+-- 1.2.7: the death recap names killers "First Surname"; records are "First-Surname".
+do
+ NOW=NOW+30
+ local pd=VoidMarkPerCharDB.PlayerData
+ pd['Hugin-Anvilhew']={name='Hugin-Anvilhew',wins=0,loses=0,isEnemy=true}
+ VoidMarkForever.RecordLoss('Hugin Anvilhew','Player-1-hugin')
+ assert(pd['Hugin-Anvilhew'].loses==1 and pd['Hugin Anvilhew']==nil,'Recap loss landed on a second record')
+ -- Old split records are folded in once, KOS entry moves with them.
+ pd['Cassy-Yan']={name='Cassy-Yan',wins=2,loses=0}
+ pd['Cassy Yan']={name='Cassy Yan',wins=0,loses=1,guid='Player-1-cassy'}
+ VoidMarkPerCharDB.KOSData=VoidMarkPerCharDB.KOSData or {}
+ VoidMarkPerCharDB.KOSData['Cassy Yan']=1800000000
+ pd['Solo Spaced']={name='Solo Spaced',loses=3}
+ local n=VoidMarkForever.MergeSpacedPlayerRecords()
+ assert(n==2,'merged '..tostring(n))
+ assert(pd['Cassy-Yan'].wins==2 and pd['Cassy-Yan'].loses==1 and pd['Cassy-Yan'].guid=='Player-1-cassy' and pd['Cassy Yan']==nil,'Split record not merged')
+ assert(VoidMarkPerCharDB.KOSData['Cassy-Yan'] and VoidMarkPerCharDB.KOSData['Cassy Yan']==nil,'KOS entry not moved')
+ assert(pd['Solo-Spaced'] and pd['Solo-Spaced'].loses==3 and pd['Solo-Spaced'].name=='Solo-Spaced','Spaced-only record not renamed')
+ assert(VoidMarkForever.MergeSpacedPlayerRecords()==0,'Merge not idempotent')
+ -- Never a negative age when a record is stamped by a clock ahead of this one.
+ assert(not VoidMark:FormatTime(time()+494):find('-',1,true),'Negative age shown')
+ print('PASS: death recap names join the First-Surname record; split records merged; no negative ages')
+end
