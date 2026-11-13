@@ -44,7 +44,25 @@ local getRecord=VoidMark.GetRunBackRecord
 VoidMark.GetRunBackRecord=function()return {readyAt=NOW-20,calc={confidence='UNKNOWN'}} end
 assert(VoidMark:GetRunBackDisplay('Fallback-One').time=='GY ?','Unknown position claims immediate return')
 VoidMark.GetRunBackRecord=getRecord
-print('PASS: live combat rows, full names, expiry, hidden window and RunBack fallback')
+-- 1.2.8: normal (non-stealth) detections in combat show too, and anyone
+-- already on the Nearby list without a row is shown.
+VoidMark.db.profile.CurrentList=1
+VoidMark.MainWindow:Show()
+TEST_IN_COMBAT=true
+local oldNearby=VoidMark.NearbyList
+VoidMark.NearbyList={['Chad-Gonk']=NOW,['Allerinut-Goonrunner']=NOW-5}
+VoidMark:RefreshCurrentList('Chad-Gonk')
+local shown={}
+for _,row in ipairs(VoidMark.CombatNearbyRows.Rows) do if row:IsShown() then shown[row.Name:GetText()]=true end end
+assert(VoidMark.CombatNearbyRows:IsShown() and shown['Chad Gonk'] and shown['Allerinut Goonrunner'],'combat detections not shown')
+-- Still nearby after 30s: the row stays.
+NOW=NOW+40;VoidMark:UpdateCombatQueueBar();assert(VoidMark.CombatNearbyRows:IsShown(),'nearby enemy dropped after 30s')
+VoidMark.NearbyList={};VoidMark:UpdateCombatQueueBar();assert(not VoidMark.CombatNearbyRows:IsShown(),'gone enemy kept')
+TEST_IN_COMBAT=false
+VoidMark:ClearCombatSightings()
+VoidMark.NearbyList=oldNearby
+VoidMark.db.profile.CurrentList=oldList
+print('PASS: live combat rows, full names, expiry, hidden window and RunBack fallback; normal combat detections shown')
 
 -- Own stealth (and friendly stealth) must never raise the stealth alert, even
 -- when the player/party unit was scanned moments earlier (10s scan cache).

@@ -1217,6 +1217,34 @@ function VoidMark:QueueCombatSighting(player, source)
     VoidMark:UpdateCombatQueueBar()
 end
 
+-- Nearby enemies detected during combat (any kind, not only stealth), plus
+-- anyone already on the Nearby list who has no row yet. Display-only rows;
+-- they become normal clickable rows when combat ends.
+function VoidMark:NoteCombatNearby(player)
+    if not InCombatLockdown() then return end
+    VoidMark.CombatSightings = VoidMark.CombatSightings or {}
+    local now = time()
+    local function note(name, seen)
+        if not name or name == "" then return end
+        local row = VoidMarkFindFrozenRow(name)
+        if row and row:IsShown() then return end
+        local s = VoidMark.CombatSightings[name]
+        if s then
+            if seen and seen > (s.seenAt or 0) then s.seenAt = seen end
+            return
+        end
+        local pd = VoidMarkPerCharDB and VoidMarkPerCharDB.PlayerData and VoidMarkPerCharDB.PlayerData[name]
+        VoidMark.CombatSightings[name] = {
+            player = name, seenAt = seen or now,
+            kos = (VoidMarkPerCharDB and VoidMarkPerCharDB.KOSData and VoidMarkPerCharDB.KOSData[name]) and true or false,
+            level = pd and pd.level or nil, class = pd and pd.class or nil,
+        }
+    end
+    for name, at in pairs(VoidMark.NearbyList or {}) do note(name, tonumber(at)) end
+    if player and VoidMark.NearbyList and VoidMark.NearbyList[player] then note(player, now) end
+    VoidMark:UpdateCombatQueueBar()
+end
+
 function VoidMark:ClearCombatSightings()
     VoidMark.CombatSightings = {}
     VoidMark._VoidMarkCombatNoticeAt = {}
@@ -1314,7 +1342,7 @@ function VoidMark:UpdateCombatQueueBar()
     local now = time()
     local entries = {}
     for player, data in pairs(self.CombatSightings or {}) do
-        if now - (data.seenAt or now) <= 30 then
+        if now - (data.seenAt or now) <= 30 or (self.NearbyList and self.NearbyList[player]) then
             local frozen = VoidMarkFindFrozenRow(player)
             if not (frozen and frozen:IsShown()) then
                 entries[#entries + 1] = data

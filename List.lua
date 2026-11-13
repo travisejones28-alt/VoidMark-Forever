@@ -42,6 +42,12 @@ function VoidMark:RefreshCurrentList(player, source)
 				VoidMark:AnnouncePlayer(player)
 			end
 		end
+		-- 1.2.8: everyone nearby shows during combat as a display-only row
+		-- (secure rows can't change until combat ends). Before, only stealth
+		-- detections did; normal ones appeared after combat.
+		if VoidMark.db.profile.CurrentList == 1 and VoidMark.NoteCombatNearby then
+			VoidMark:NoteCombatNearby(player)
+		end
 		return
 	end
 
