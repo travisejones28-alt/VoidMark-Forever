@@ -234,9 +234,19 @@ function VoidMark:ScanUnit(unit)
         if VMF.LastDetectionEnemy[name] then return name end
         return nil
     end
-    VMF.LastDetection[name]=GetTime()
     local playerData = KnownPlayerData(name)
     local isEnemy = VoidMark:Readable(SafeCall(VMAPI.UnitIsEnemy, "player", unit))
+    if isEnemy == nil and VMF.IsHostileUnit then
+        -- Forever can hide UnitIsEnemy (combat). A readable enemy faction
+        -- still proves it; never use this to decide someone is friendly.
+        if VMF.IsHostileUnit(unit) == true then isEnemy = true end
+    end
+    if isEnemy == nil then
+        -- Unknown yet: don't cache, so the next scan (or retry) can detect
+        -- them. Caching here used to hide a real enemy for 10 seconds.
+        return nil
+    end
+    VMF.LastDetection[name]=GetTime()
     VMF.LastDetectionEnemy[name] = isEnemy == true
 
     if isEnemy then
@@ -281,7 +291,15 @@ function VoidMark:NamePlateEvent(event, unit)
     if type(unit) ~= "string" then return end
     if event == "NAME_PLATE_UNIT_ADDED" then
         VoidMark.NamePlateUnits[unit] = true
-        VoidMark:ScanUnit(unit)
+        if not VoidMark:ScanUnit(unit) and C_Timer and C_Timer.After then
+            -- A new plate's name/faction can be unreadable for a moment.
+            -- Retry quickly instead of waiting for the 1s scan.
+            for _, delay in ipairs({ 0.1, 0.3 }) do
+                C_Timer.After(delay, function()
+                    if VoidMark.NamePlateUnits[unit] then VoidMark:ScanUnit(unit) end
+                end)
+            end
+        end
     elseif event == "NAME_PLATE_UNIT_REMOVED" then
         VoidMark.NamePlateUnits[unit] = nil
     end
@@ -311,7 +329,7 @@ end
 
 function VoidMark:StartUnitScan()
     if not VoidMark.UnitScanTimer then
-        VoidMark.UnitScanTimer = VoidMark:ScheduleRepeatingTimer("ScanVisibleUnits", 1.0)
+        VoidMark.UnitScanTimer = VoidMark:ScheduleRepeatingTimer("ScanVisibleUnits", 0.5)
     end
 end
 

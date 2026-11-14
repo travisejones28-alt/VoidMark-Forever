@@ -147,3 +147,27 @@ do
     assert(not em:ObserveSpell('Player-1-hunter2','Hunt-Two','HUNTER',25771,'SPELL_AURA_APPLIED'),'Forbearance on a non-Paladin tracked')
 end
 print('PASS: bubbles show in combat when hostility/aura ids are hidden; Forbearance fallback; real icons')
+
+-- 1.2.9: a nameplate whose enemy flag is hidden must not be cached as
+-- "not an enemy" for 10s; a readable enemy faction detects it right away.
+do
+    local api=VoidMarkForever.API
+    local oIE,apiIE=UnitIsEnemy,api.UnitIsEnemy
+    local oF=UnitFactionGroup
+    local oCA=UnitCanAttack
+    UnitIsEnemy=function() return SECRET end
+    UnitCanAttack=UnitIsEnemy
+    api.UnitIsEnemy=function(...) return VoidMarkForever.Safe(UnitIsEnemy,...) end
+    VoidMarkForever.LastDetection={}
+    VoidMarkPerCharDB.IgnoreData['Enemy-One']=nil
+    -- Faction hidden too: unknown, so nothing is detected and nothing cached.
+    UnitFactionGroup=function() return SECRET end
+    assert(VoidMark:ScanUnit('nameplate1')==nil,'Unknown hostility detected')
+    assert(VoidMarkForever.LastDetection['Enemy-One']==nil,'Unknown hostility cached for 10s')
+    -- Faction readable on the next scan: detected immediately.
+    UnitFactionGroup=oF
+    assert(VoidMark:ScanUnit('nameplate1')=='Enemy-One','Enemy with hidden flag not detected on next scan')
+    UnitIsEnemy,api.UnitIsEnemy,UnitCanAttack=oIE,apiIE,oCA
+    VoidMarkForever.LastDetection={}
+end
+print('PASS: hidden enemy flag is not cached; faction fallback detects at once')
