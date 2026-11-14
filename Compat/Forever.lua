@@ -85,6 +85,32 @@ local function Aura(unit,index,filter)
     return F.Readable(a.name),F.Readable(a.icon),F.Readable(a.applications),F.Readable(a.dispelName),F.Readable(a.duration),F.Readable(a.expirationTime),F.Readable(a.sourceUnit),F.Readable(a.isStealable),nil,F.Readable(a.spellId)
 end
 if not UnitAura then F.API.UnitAura=Aura end
+-- Hostility for a unit. Forever can hide UnitCanAttack in combat, so fall
+-- back to UnitIsEnemy, then to a readable faction mismatch. nil = unknown.
+function F.IsHostileUnit(unit)
+    local v=F.Safe(UnitCanAttack,"player",unit)
+    if v~=nil then return v and true or false end
+    v=F.Safe(UnitIsEnemy,"player",unit)
+    if v~=nil then return v and true or false end
+    local mine=F.Safe(UnitFactionGroup,"player")
+    local theirs=F.Safe(UnitFactionGroup,unit)
+    if type(mine)=="string" and type(theirs)=="string" and mine~="" and theirs~="" and theirs~="Neutral" then
+        return mine~=theirs
+    end
+    return nil
+end
+-- True when an aura slot exists even if its contents read as secret.
+function F.AuraSlotExists(unit,index,filter)
+    if type(UnitAura)=="function" then
+        local ok,v=pcall(UnitAura,unit,index,filter)
+        return ok and v~=nil
+    end
+    if C_UnitAuras and C_UnitAuras.GetAuraDataByIndex then
+        local ok,v=pcall(C_UnitAuras.GetAuraDataByIndex,unit,index,filter)
+        return ok and v~=nil
+    end
+    return false
+end
 if not UnitBuff then F.API.UnitBuff=function(u,i) return Aura(u,i,"HELPFUL") end end
 if not UnitDebuff then F.API.UnitDebuff=function(u,i) return Aura(u,i,"HARMFUL") end end
 if not GetAddOnMetadata and C_AddOns then F.API.GetAddOnMetadata=function(...) return F.Safe(C_AddOns.GetAddOnMetadata,...) end end

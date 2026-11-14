@@ -17,11 +17,20 @@ local function CacheUnit(unit)
     if type(guid)~="string" then return end
     local name=F.FullName(unit)
     local isPlayer=F.Safe(UnitIsPlayer,unit)
-    local hostile=F.Safe(UnitCanAttack,"player",unit)
+    local hostile=F.IsHostileUnit(unit)
     local _,class=F.Safe(UnitClass,unit)
     local creature=F.Safe(UnitCreatureType,unit)
+    -- Forever can hide unit facts in combat (secret -> nil). Keep what we
+    -- already knew instead of forgetting that a player is hostile.
+    local prior=identities[guid]
+    if prior then
+        if isPlayer==nil then isPlayer=prior.player end
+        if hostile==nil then hostile=prior.hostile end
+        if class==nil then class=prior.class end
+        if name==nil then name=prior.name end
+    end
     if name and (isPlayer or hostile) then
-        identities[guid]={name=name,class=class,hostile=hostile,player=isPlayer,creature=creature,unit=unit,at=GetTime()}
+        identities[guid]={name=name,class=class,hostile=hostile,player=isPlayer,creature=creature,unit=unit,at=GetTime(),hunterPet=prior and prior.hunterPet or nil}
         if isPlayer then
             F.GUIDToName[guid]=name; F.NameToGUID[name]=guid
             A:Observe(unit)
@@ -137,7 +146,9 @@ local function ObserveSpell(unit,id,event)
         TaliaaGankTracker:HandleHunterFeign(guid,identity.name)
     end
     if identity and identity.player and identity.hostile and VoidMarkEnemyMoves then
-        VoidMarkEnemyMoves:ObserveSpell(guid,identity.name,identity.class,id,event)
+        VoidMarkEnemyMoves:ObserveSpell(guid,identity.name,identity.class,id,event,unit)
+    elseif VoidMarkEnemyMoves and VoidMarkEnemyMoves.DebugSkip then
+        VoidMarkEnemyMoves:DebugSkip(unit,id,event,identity)
     end
 end
 local function ReadAuras(unit)
@@ -146,10 +157,16 @@ local function ReadAuras(unit)
     CacheUnit(unit)
     local current={}
     local sap
+    local hidden=false
     for _,filter in ipairs({"HELPFUL","HARMFUL"}) do
         for index=1,40 do
             local name,_,_,_,duration,expiry,source,_,_,id=F.API.UnitAura(unit,index,filter)
-            if not name then break end
+            if not name then
+                -- A slot that exists but reads as secret is hidden, not gone.
+                if F.AuraSlotExists(unit,index,filter) then hidden=true end
+                break
+            end
+            if type(id)~="number" then hidden=true end
             if type(id)=="number" then
                 current[id]={expiration=expiry,source=source,duration=duration}
                 if unit=="player" and (id==6770 or id==2070 or id==11297) then sap=source or "unknown" end
@@ -157,6 +174,10 @@ local function ReadAuras(unit)
         end
     end
     local prior=auras[guid] or {}
+    if hidden then
+        -- Merge: keep earlier auras so a hidden read never fakes "removed".
+        for id,info in pairs(prior) do if current[id]==nil then current[id]=info end end
+    end
     for id,info in pairs(current) do
         if not prior[id] then ObserveSpell(unit,id,"SPELL_AURA_APPLIED")
         elseif type(info.expiration)=="number" and info.expiration~=prior[id].expiration then ObserveSpell(unit,id,"SPELL_AURA_REFRESH") end

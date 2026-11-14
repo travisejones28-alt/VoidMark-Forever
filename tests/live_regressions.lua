@@ -92,3 +92,58 @@ do
     VoidMarkForever.LastDetection={}
 end
 print('PASS: own and friendly stealth/vanish/prowl never raise the stealth alert')
+
+-- 1.2.9: Forever hides hostility (and sometimes aura ids) in combat. A Paladin
+-- bubble must still show on Enemy Moves right away, not after it ends.
+do
+    local em=VoidMarkEnemyMoves
+    em:SetEnabled(true)
+    em:ClearHover()
+    local oG,oN,oC,oCA,oIE,oA=UnitGUID,UnitName,UnitClass,UnitCanAttack,UnitIsEnemy,UnitAura
+    UnitGUID=function(u) if u=="player" then return "Player-1-hero" elseif u=="target" or u=="nameplate1" then return "Player-1-pally" end end
+    UnitName=function(u) if u=="player" then return "Hero","One" elseif u=="target" or u=="nameplate1" then return "Asgeirr" end end
+    UnitClass=function(u) if u=="player" then return "Priest","PRIEST" end return "Paladin","PALADIN" end
+    UnitCanAttack=function() return SECRET end
+    UnitIsEnemy=function() return SECRET end
+    -- F.API captured the originals at load; point it at the overrides too.
+    local api=VoidMarkForever.API
+    local savedAPI={}
+    for _,n in ipairs({'UnitGUID','UnitName','UnitClass','UnitCanAttack','UnitIsEnemy','UnitAura'}) do
+        savedAPI[n]=api[n]
+        api[n]=function(...) return VoidMarkForever.Safe(_G[n],...) end
+    end
+    local auras={}
+    UnitAura=function(u,i,filter)
+        if u~="target" and u~="nameplate1" then return nil end
+        local a=auras[filter] and auras[filter][i]
+        if not a then return nil end
+        return a.name,nil,0,nil,a.dur,NOW+a.dur,nil,nil,nil,a.id
+    end
+    TEST_IN_COMBAT=true
+    Emit('PLAYER_TARGET_CHANGED')
+    -- Divine Protection lands (readable id): frame shows ACTIVE immediately.
+    auras.HELPFUL={{name='Divine Protection',dur=8,id=5573}}
+    Emit('UNIT_AURA','target')
+    local f=VoidMarkEnemyMovesFrame
+    assert(f and f:IsShown(),'Bubble in combat did not show Enemy Moves')
+    assert(tostring(f.Status:GetText()):find('ACTIVE',1,true),'Bubble not shown as active: '..tostring(f.Status:GetText()))
+    -- Shared-lockout rows get the real spell icon, not a question mark.
+    for i=1,3 do
+        local tex=f.Rows[i].Icon.texture or (f.Rows[i].Icon.GetTexture and f.Rows[i].Icon:GetTexture())
+        assert(tex~="Interface\\Icons\\INV_Misc_QuestionMark",'Row '..i..' icon is a question mark')
+    end
+    -- A hidden aura read mid-bubble is not treated as the bubble ending.
+    auras.HELPFUL={{name=SECRET,dur=8,id=SECRET}}
+    Emit('UNIT_AURA','target')
+    assert(tostring(f.Status:GetText()):find('ACTIVE',1,true),'Hidden aura read ended the bubble')
+    UnitGUID,UnitName,UnitClass,UnitCanAttack,UnitIsEnemy,UnitAura=oG,oN,oC,oCA,oIE,oA
+    for n,fn in pairs(savedAPI) do api[n]=fn end
+    TEST_IN_COMBAT=false
+end
+-- Forbearance alone (bubble id hidden) still locks all three bubbles for 60s.
+do
+    local em=VoidMarkEnemyMoves
+    assert(em:ObserveSpell('Player-1-pally2','Pally-Two','PALADIN',25771,'SPELL_AURA_APPLIED'),'Forbearance not tracked')
+    assert(not em:ObserveSpell('Player-1-hunter2','Hunt-Two','HUNTER',25771,'SPELL_AURA_APPLIED'),'Forbearance on a non-Paladin tracked')
+end
+print('PASS: bubbles show in combat when hostility/aura ids are hidden; Forbearance fallback; real icons')

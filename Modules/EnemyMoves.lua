@@ -4,7 +4,7 @@ local VMAPI = VoidMarkForever.API
 VoidMarkEnemyMoves = VoidMarkEnemyMoves or {}
 local EM = VoidMarkEnemyMoves
 
-local VERSION = "1.3.3"
+local VERSION = "1.3.4"
 local MAX_ROWS = 8
 local ROW_H, ROW_GAP = 22, 3
 local HEADER_H, STATUS_H = 63, 22
@@ -67,7 +67,7 @@ local function AddSpell(ids,key,name,cd,active,category,color,opts)
     local d={key=key,name=name,cd=cd or 0,active=active or 0,category=category or "utility",
         color=color or "purple",class=opts.class,pet=opts.pet and true or false,
         reset=opts.reset,priority=opts.priority or 50,activeByID=opts.activeByID,
-        sharedLockout=opts.sharedLockout}
+        sharedLockout=opts.sharedLockout,iconID=ids[1]}
     CANON[key]=d
     for _,id in ipairs(ids) do SPELLS[id]=d end
 end
@@ -320,7 +320,33 @@ local function ApplyReset(e,def)
         if s then s.cooldownEnd=Now() end
     end
 end
+-- Forbearance (25771) lands on the Paladin with any bubble. When the bubble
+-- itself can't be read, the debuff still proves all three are locked for 60s.
+local FORBEARANCE=25771
+local BUBBLES={"DIVINE_SHIELD","DIVINE_PROTECTION","BLESSING_PROTECTION"}
+local function TrackForbearance(ownerGUID,ownerName,ownerClass,event)
+    if event~="SPELL_AURA_APPLIED" and event~="SPELL_AURA_REFRESH" then return false end
+    local e=GetEnemy(ownerGUID,ownerName,ownerClass or "PALADIN")
+    if not e then return false end
+    if e.class and e.class~="PALADIN" then return false end
+    local now=Now()
+    for _,key in ipairs(BUBBLES) do
+        local s=e.spells[key]
+        if s and s.usedAt and now-s.usedAt<5 then return false end
+    end
+    for _,key in ipairs(BUBBLES) do
+        local d=CANON[key]
+        local s=e.spells[key] or {}
+        e.spells[key]=s
+        s.key,s.name=d.key,d.name
+        s.cooldownEnd=math.max(tonumber(s.cooldownEnd) or 0,now+60)
+        s.sharedLockoutEnd=math.max(tonumber(s.sharedLockoutEnd) or 0,now+60)
+    end
+    return true
+end
+
 local function TrackSpell(ownerGUID,ownerName,ownerClass,spellID,spellName,event)
+    if spellID==FORBEARANCE then return TrackForbearance(ownerGUID,ownerName,ownerClass,event) end
     local def=SPELLS[spellID]
     if not def and spellName and TRINKET_NAMES[spellName] then
         def={key="PVP_TRINKET",name="PvP Trinket",cd=300,active=0,category="utility",color="gray",priority=25}
@@ -642,7 +668,13 @@ end
 local function UpdateTarget()
     if testMode then return end
     targetGUID=nil
-    if VMAPI.UnitExists("target") and VMAPI.UnitIsPlayer("target") and VMAPI.UnitCanAttack("player","target") then
+    local hostile=VoidMarkForever.IsHostileUnit("target")
+    if hostile==nil then
+        -- Forever can hide hostility in combat; a known tracked enemy still counts.
+        local g=VMAPI.UnitGUID("target")
+        hostile=g and enemies[g] and true or nil
+    end
+    if VMAPI.UnitExists("target") and VMAPI.UnitIsPlayer("target") and hostile then
         targetGUID=VMAPI.UnitGUID("target")
         if vanishedGUID and targetGUID~=vanishedGUID then
             vanishedGUID=nil
@@ -689,7 +721,7 @@ function EM:Refresh()
         local c=list[1].def.category=="defensive" and C.red or C.orange
         SetColor(frame.Status,c) frame.StatusBG:SetVertexColor(c[1]*0.25,c[2]*0.25,c[3]*0.25,0.95)
     else
-        frame.Status:SetText(string.format("TRACKING %d COOLDOWN%s",#list,#list==1 and "" or "S"))
+        frame.Status:SetText(string.format("%d ON COOLDOWN",#list))
         SetColor(frame.Status,C.purple) frame.StatusBG:SetVertexColor(0.12,0.04,0.16,0.92)
     end
 
@@ -708,8 +740,9 @@ function EM:Refresh()
             row.LeftAccent:SetVertexColor(c[1],c[2],c[3],1)
             row.IconBG:SetVertexColor(c[1]*0.20,c[2]*0.20,c[3]*0.20,0.98)
             row.TopSheen:SetVertexColor(1,1,1,item.active and 0.22 or 0.10)
-            if s.lastSpellID and VMAPI.GetSpellTexture then
-                local tex=VMAPI.GetSpellTexture(s.lastSpellID)
+            local iconID=s.lastSpellID or def.iconID
+            if iconID and VMAPI.GetSpellTexture then
+                local tex=VMAPI.GetSpellTexture(iconID)
                 if tex then row.Icon:SetTexture(tex) else row.Icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark") end
             elseif def.key=="POTION" then row.Icon:SetTexture("Interface\\Icons\\INV_Potion_54")
             else row.Icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark") end
@@ -1133,8 +1166,16 @@ SlashCmdList.VOIDMARKENEMYMOVES=function(msg)
 end
 
 -- Readable UNIT_SPELLCAST/UNIT_AURA observations use the canonical tracker.
-function EM:ObserveSpell(guid,name,class,id,event)
+function EM:ObserveSpell(guid,name,class,id,event,unit)
+    -- If target detection missed this enemy (hostility hidden in combat),
+    -- a tracked move from the unit we have targeted proves who it is.
+    if not testMode and guid and guid~=targetGUID and VMAPI.UnitGUID("target")==guid then
+        targetGUID=guid
+    end
     local tracked=TrackSpell(guid,name,class,id,nil,event)
+    if DB().debug and (tracked or SPELLS[id] or id==FORBEARANCE) then
+        DEFAULT_CHAT_FRAME:AddMessage(string.format("|cffb45cff[EnemyMoves]|r %s %s %s via %s%s",tostring(name or "?"),tostring(event),tostring(id),tostring(unit or "?"),tracked and "" or " (ignored)"))
+    end
     if not tracked then return false end
     BroadcastTracked(guid,name,class,id,event)
     local def=SPELLS[id]
@@ -1143,4 +1184,11 @@ function EM:ObserveSpell(guid,name,class,id,event)
     end
     if guid==targetGUID or guid==hoverGUID or guid==vanishedGUID then self:Refresh() end
     return true
+end
+
+-- Debug only: a known move from a unit we couldn't confirm as a hostile player.
+function EM:DebugSkip(unit,id,event,identity)
+    if not DB().debug or not (SPELLS[id] or id==FORBEARANCE) then return end
+    DEFAULT_CHAT_FRAME:AddMessage(string.format("|cffb45cff[EnemyMoves]|r skipped %s %s from %s (player=%s hostile=%s)",
+        tostring(id),tostring(event),tostring(unit),tostring(identity and identity.player),tostring(identity and identity.hostile)))
 end
