@@ -67,6 +67,7 @@ function F.HandlePartyKill(attackerGUID,targetGUID,unconscious)
     gt:ConfirmHunterRealDeath(targetGUID,name)
     gt:RecordKill(name,targetGUID,mine)
     if gt.recentKillEvents[key]==last then return end
+    if VoidMarkFightMap then VoidMarkFightMap:Add(mine and "W" or "G",name) end
     -- Reuse the complete RunBack death-time capture and physics engine.
     -- Synthetic flags describe the verified group/player identities, not a
     -- synthesized combat-log death or damage attribution.
@@ -133,6 +134,7 @@ function F.RecordLoss(name,guid)
     local record=data[name]
     if not record then return end
     record.guid=guid; record.loses=(tonumber(record.loses) or 0)+1
+    if VoidMarkFightMap then VoidMarkFightMap:Add("L",name) end
     if VoidMarkStats then VoidMarkStats.newevents=true end
     if VoidMark.RefreshCurrentList then VoidMark:RefreshCurrentList() end
 end

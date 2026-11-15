@@ -225,6 +225,7 @@ function VoidMark:ScanUnit(unit)
 
     VMF.Stats.scans = (VMF.Stats.scans or 0) + 1
     CacheIdentity(unit,name)
+    VMF.NoteTargeting(unit,name)
     VMF.LastDetection=VMF.LastDetection or {}
     VMF.LastDetectionEnemy=VMF.LastDetectionEnemy or {}
     local seen=VMF.LastDetection[name]
@@ -281,8 +282,42 @@ function VoidMark:ScanUnit(unit)
     return nil
 end
 
+-- Every scan of a nameplate remembers whose it is (see NAME_PLATE_UNIT_REMOVED).
+local ScanUnitRaw = VoidMark.ScanUnit
+function VoidMark:ScanUnit(unit)
+    local name = ScanUnitRaw(self, unit)
+    if name and type(unit) == "string" and unit:find("^nameplate") then
+        VMF.PlateName = VMF.PlateName or {}
+        VMF.PlateName[unit] = name
+    end
+    return name
+end
 VMF.ScanUnit = function(unit)
     return VoidMark:ScanUnit(unit)
+end
+
+-- Enemy players who have us targeted (seen by the scan), for the loss fallback.
+VMF.TargetedMe = VMF.TargetedMe or {}
+function VMF.NoteTargeting(unit, name)
+    if type(unit) ~= "string" or type(name) ~= "string" then return end
+    local enemy = VMF.LastDetectionEnemy and VMF.LastDetectionEnemy[name]
+    if enemy == nil then enemy = VoidMark:Readable(SafeCall(VMAPI.UnitIsEnemy, "player", unit)) end
+    if enemy ~= true then return end
+    if VoidMark:Readable(SafeCall(VMAPI.UnitIsUnit, unit .. "target", "player")) ~= true then return end
+    local guid = VoidMark:Readable(SafeCall(VMAPI.UnitGUID, unit))
+    if type(guid) ~= "string" or guid:sub(1, 6) ~= "Player" then return end
+    VMF.TargetedMe[name] = { guid = guid, at = GetTime() }
+end
+-- The one enemy who had us targeted in the last few seconds, or nil (none, or several).
+function VMF.SoleTargeter(window)
+    local found, count = nil, 0
+    for name, info in pairs(VMF.TargetedMe) do
+        if GetTime() - (info.at or 0) <= (window or 5) then
+            count = count + 1; found = { name = name, guid = info.guid }
+        end
+    end
+    if count == 1 then return found.name, found.guid end
+    return nil
 end
 
 -- Keep the actual nameplate tokens supplied by Blizzard, exactly as the working
@@ -302,6 +337,15 @@ function VoidMark:NamePlateEvent(event, unit)
         end
     elseif event == "NAME_PLATE_UNIT_REMOVED" then
         VoidMark.NamePlateUnits[unit] = nil
+        -- A rogue who stealths loses his nameplate at once, and the Stealth or
+        -- Vanish cast often arrives a moment later on a token that now points at
+        -- nobody. Remember who it was for a moment so the alert still fires.
+        local name = VMF.PlateName and VMF.PlateName[unit]
+        if name then
+            VMF.PlateMemory = VMF.PlateMemory or {}
+            VMF.PlateMemory[unit] = { name = name, at = GetTime() }
+            VMF.PlateName[unit] = nil
+        end
     end
 end
 
@@ -357,10 +401,9 @@ function VoidMark:ForeverVisibleScan()
 end
 
 local stealthByID = {
-    [1784] = "Stealth",
-    [5215] = "Prowl",
-    [1856] = "Vanish",
-    [1857] = "Vanish",
+    [1784] = "Stealth", [1785] = "Stealth", [1786] = "Stealth", [1787] = "Stealth",
+    [5215] = "Prowl", [6783] = "Prowl", [9913] = "Prowl",
+    [1856] = "Vanish", [1857] = "Vanish",
 }
 
 local function HandleForeverSpellcast(unit, spellID)
@@ -372,11 +415,18 @@ local function HandleForeverSpellcast(unit, spellID)
     -- Never alert on yourself or your group, whatever unit token Forever uses.
     if unit == "player" or unit == "vehicle" or unit == "pet"
         or unit:find("^party") or unit:find("^raid") then return end
-    if VoidMark:Readable(SafeCall(VMAPI.UnitIsUnit, unit, "player")) == true then return end
-    if VoidMark:Readable(SafeCall(VMAPI.UnitIsEnemy, "player", unit)) ~= true then return end
-
-    local name = VMF.ScanUnit(unit)
-    if not name then return end
+    -- A nameplate that just went away: the cast belongs to whoever it showed.
+    local name
+    if unit:find("^nameplate") and VoidMark:Readable(SafeCall(VMAPI.UnitExists, unit)) ~= true then
+        local m = VMF.PlateMemory and VMF.PlateMemory[unit]
+        if not m or GetTime() - (m.at or 0) > 1.5 then return end
+        name = m.name
+    else
+        if VoidMark:Readable(SafeCall(VMAPI.UnitIsUnit, unit, "player")) == true then return end
+        if VoidMark:Readable(SafeCall(VMAPI.UnitIsEnemy, "player", unit)) ~= true then return end
+        name = VMF.ScanUnit(unit)
+        if not name then return end
+    end
 
     spellID = VoidMark:Readable(spellID)
     if type(spellID) ~= "number" then return end
@@ -441,8 +491,15 @@ function VMF.ReadDeathRecapKiller()
 end
 
 function VoidMark:PlayerDeadEvent(...)
+    -- Taken now: the scan keeps running while we wait for the recap.
+    local soleName, soleGUID = VMF.SoleTargeter(5)
     C_Timer.After(0.15,function()
         local name,guid=VMF.ReadDeathRecapKiller()
+        if not (name and guid) then
+            -- The recap could not name a player: the one enemy who had us
+            -- targeted just before we died. Two or more and nobody gets it.
+            name, guid = soleName, soleGUID
+        end
         if name and guid and VMF.RecordLoss then VMF.RecordLoss(name,guid) end
     end)
 end

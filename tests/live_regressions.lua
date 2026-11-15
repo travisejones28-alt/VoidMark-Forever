@@ -222,3 +222,82 @@ do
     UnitGUID,UnitIsTapDenied,UnitIsPlayer=oG,oT,oIP
 end
 print('PASS: nameplates enemy players red, NPCs blue, tapped gray, remembered in combat, toggle off')
+
+-- 1.2.18: adopted from the Spy port - stealth after the nameplate goes, the loss
+-- fallback, the fight map, notes and tags.
+do
+    local VMF=VoidMarkForever
+    local api=VMF.API
+    -- Vanish arrives just after the nameplate disappeared: still alerted.
+    local got
+    local oA,oP=VoidMark.AlertStealthPlayer,VoidMark.PromoteStealthPlayer
+    VoidMark.AlertStealthPlayer=function(_,n) got=n end;VoidMark.PromoteStealthPlayer=function() end
+    VMF.LastDetection={};VMF.LastDetectionEnemy={}
+    assert(VMF.ScanUnit('nameplate1')=='Enemy-One')
+    VoidMark:NamePlateEvent('NAME_PLATE_UNIT_REMOVED','nameplate1')
+    local oE,aE=UnitExists,api.UnitExists
+    UnitExists=function(u) if u=='nameplate1' then return false end return oE(u) end
+    api.UnitExists=UnitExists
+    VoidMark:ForeverSpellcastEvent('UNIT_SPELLCAST_SUCCEEDED','nameplate1',nil,1856)
+    assert(got=='Enemy-One','Vanish after the plate went: no alert')
+    got=nil;VoidMark:ForeverSpellcastEvent('UNIT_SPELLCAST_SUCCEEDED','nameplate1',nil,1787)
+    assert(got=='Enemy-One','Stealth rank 4 not known')
+    got=nil;NOW=NOW+3;VoidMark:ForeverSpellcastEvent('UNIT_SPELLCAST_SUCCEEDED','nameplate1',nil,1856)
+    assert(got==nil,'stale plate memory still alerts')
+    UnitExists,api.UnitExists=oE,aE
+    VoidMark.AlertStealthPlayer,VoidMark.PromoteStealthPlayer=oA,oP
+
+    -- Fight map: a loss is kept with where it happened.
+    local oPos=C_Map.GetPlayerMapPosition
+    C_Map.GetPlayerMapPosition=function() return {GetXY=function() return 0.4,0.6 end} end
+    VoidMarkPerCharDB.Fights={}
+    -- Loss fallback: recap names nobody; the one enemy who had us targeted gets it.
+    local oU,aU=UnitIsUnit,api.UnitIsUnit
+    UnitIsUnit=function(a,b) if a=='nameplate1target' and b=='player' then return true end return a==b end
+    api.UnitIsUnit=UnitIsUnit
+    VMF.TargetedMe={};VMF.LastDetection={}
+    VMF.ScanUnit('nameplate1')
+    assert(VMF.TargetedMe['Enemy-One'],'targeting enemy not noted')
+    local oR=VMF.ReadDeathRecapKiller;VMF.ReadDeathRecapKiller=function() return nil,nil end
+    local rec=VoidMarkPerCharDB.PlayerData['Enemy-One'];local before=rec and tonumber(rec.loses) or 0
+    NOW=NOW+10;VMF.TargetedMe['Enemy-One'].at=NOW
+    VoidMark:PlayerDeadEvent();Drain()
+    rec=VoidMarkPerCharDB.PlayerData['Enemy-One']
+    assert(rec and tonumber(rec.loses)==before+1,'sole targeter did not get the loss')
+    -- Two targeters: nobody gets it.
+    VMF.TargetedMe['Other-Guy']={guid='Player-1-other',at=NOW};NOW=NOW+10
+    VMF.TargetedMe['Enemy-One'].at=NOW;VMF.TargetedMe['Other-Guy'].at=NOW
+    VoidMark:PlayerDeadEvent();Drain()
+    assert(tonumber(VoidMarkPerCharDB.PlayerData['Enemy-One'].loses)==before+1,'two targeters still credited')
+    VMF.ReadDeathRecapKiller=oR;UnitIsUnit,api.UnitIsUnit=oU,aU;VMF.TargetedMe={}
+    -- A friendly targeting us is never noted.
+    local fm=VoidMarkFightMap
+    local fights=fm:Store()
+    assert(#fights==1 and fights[1].k=='L' and fights[1].n=='Enemy-One' and fights[1].x==0.4 and fights[1].m==1431,'loss not on the fight map')
+    fm:Add('W','Enemy-One');assert(fights[2].k=='W')
+    assert(#fm:Visible(1431)==2 and #fm:Visible(999)==0,'map filter')
+    VoidMark.db.profile.FightMapPeriod='day';NOW=NOW+2*86400
+    assert(#fm:Visible(1431)==0,'old fights shown for Last day')
+    VoidMark.db.profile.FightMapPeriod='all';assert(#fm:Visible(1431)==2)
+    VoidMark.db.profile.FightMapPeriod='off';assert(#fm:Visible(1431)==0)
+    VoidMark.db.profile.FightMapPeriod=nil
+    C_Map.GetPlayerMapPosition=nil;fm:Add('W','Enemy-One');assert(#fights==2,'fight added without a position')
+    C_Map.GetPlayerMapPosition=oPos
+    VoidMarkPerCharDB.Fights={}
+
+    -- Notes and tags.
+    local PN=VoidMarkPlayerNotes
+    PN:SetNote('Enemy-One','  camps the |cffff0000Crossroads|r  ')
+    assert(PN:Note('Enemy-One')=='camps the /cffff0000Crossroads/r','note not cleaned')
+    PN:SetTag('Enemy-One','rival');assert(PN:Tag('Enemy-One')=='rival')
+    assert(PN:Marker('Enemy-One'):find('RaidTargetingIcon_2',1,true),'rival marker')
+    local lines={};local tip={AddLine=function(_,t) lines[#lines+1]=t end}
+    PN:AddTooltip(tip,'Enemy-One');assert(lines[1]:find('Rival',1,true) and lines[2]:find('Crossroads',1,true))
+    PN:SetTag('Enemy-One','bogus');assert(PN:Tag('Enemy-One')=='rival','bad tag accepted')
+    PN:SetNote('Enemy-One','');PN:SetTag('Enemy-One',nil)
+    assert(VoidMarkDB.PlayerNotes['Enemy-One']==nil,'empty entry kept')
+    assert(PN:Marker('Enemy-One')=='')
+    PN:SetNote('x',string.rep('a',300))
+    assert(#PN:Note('x')==200);PN:SetNote('x','')
+end
+print('PASS: stealth after plate gone, loss fallback, fight map, notes and tags')

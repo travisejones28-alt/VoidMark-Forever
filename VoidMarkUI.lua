@@ -706,6 +706,8 @@ function VM:StyleRow(num, name, desc, opacity)
         marker = "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_8:13:13:0:0|t "
     elseif isStealth then
         marker = "|TInterface\\Icons\\Ability_Stealth:13:13:0:0|t "
+    elseif VoidMarkPlayerNotes then
+        marker = VoidMarkPlayerNotes:Marker(name)
     end
 
     local displayName = VoidMarkForever.DisplayName(name)
@@ -1252,6 +1254,8 @@ local OriginalShowTooltip = VoidMark.ShowTooltip
 function VoidMark:ShowTooltip(row, show, id)
     local result = OriginalShowTooltip(self, row, show, id)
     if show and GameTooltip and GameTooltip:IsShown() then
+        local who = VoidMark.ButtonName and row and VoidMark.ButtonName[row.id]
+        if VoidMarkPlayerNotes and who then VoidMarkPlayerNotes:AddTooltip(GameTooltip, who) end
         GameTooltip:AddLine(" ")
         GameTooltip:AddLine("Shift+Click: Details", 0.72, 0.46, 0.92)
         GameTooltip:AddLine("Right-click: Actions", 0.55, 0.55, 0.60)

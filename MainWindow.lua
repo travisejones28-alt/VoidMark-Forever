@@ -333,6 +333,11 @@ function VoidMark_CreateBarDropdown(self, level)
 				info.arg1 = self.relativeTo.name
 				UIDropDownMenu_AddButton(info, level)
 			end
+			-- Your note and Spare/Rival tag (Modules/PlayerNotes.lua).
+			if VoidMarkPlayerNotes then
+				VoidMarkPlayerNotes:AddMenu(1, player)
+				info = UIDropDownMenu_CreateInfo()
+			end
 
 			if VoidMark.db.profile.CurrentList == 1 then
 				info.isTitle = nil
@@ -347,6 +352,10 @@ function VoidMark_CreateBarDropdown(self, level)
 		elseif level == 2 then
 			local key = UIDROPDOWNMENU_MENU_VALUE["Key"]
 			info = UIDropDownMenu_CreateInfo()
+			if key == "VoidMarkTag" and VoidMarkPlayerNotes then
+				VoidMarkPlayerNotes:AddMenu(2, player)
+				return
+			end
 
 			if key == L["AnnounceDropDownMenu"] and (VoidMark.db.profile.CurrentList == 1 or VoidMark.db.profile.CurrentList == 2) then
 				info.isTitle = nil
