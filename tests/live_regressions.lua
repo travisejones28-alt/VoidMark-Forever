@@ -190,6 +190,12 @@ do
     -- combat hides the GUID: still red (remembered)
     UnitGUID=function() return SECRET end;UnitIsPlayer=function() return SECRET end
     p1.healthBar.c=nil;NC.Paint(p1);assert(p1.healthBar.c and p1.healthBar.c[1]>0.8,'remembered in combat')
+    -- Far-away name-only plate: the name gets the color (bar hidden).
+    local function txt() local t={};function t:SetTextColor(r,g,b) self.c={r,g,b} end;return t end
+    local far={unit='nameplate2',healthBar=bar(),name=txt()};far.healthBar.IsShown=function() return false end
+    NC.Paint(far);assert(far.name.c and far.name.c[3]>0.9,'far NPC name blue')
+    local near={unit='nameplate2',healthBar=bar(),name=txt()};near.healthBar.IsShown=function() return true end
+    NC.Paint(near);assert(not near.name.c,'full plate keeps its white name')
     -- Dropdown picks: purple players, game color for NPCs.
     VoidMark.db.profile.NameplatePlayerColor='purple';VoidMark.db.profile.NameplateNpcColor='game'
     p1.healthBar.c=nil;NC.Paint(p1);assert(p1.healthBar.c[1]==0.64 and p1.healthBar.c[3]==1.00,'purple players')

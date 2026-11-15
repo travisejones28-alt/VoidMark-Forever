@@ -79,14 +79,31 @@ function NC.Paint(frame)
     if not frame or not NC.Enabled() then return end
     local unit = frame.unit or frame.displayedUnit
     if type(unit) ~= "string" or not unit:find("^nameplate") then return end
-    local bar = frame.healthBar
-    if not bar or not bar.SetStatusBarColor then return end
     local kind = kinds[unit]
     if not kind then kind = NC.Kind(unit); kinds[unit] = kind end
     local c
     if kind == "enemyPlayer" then c = NC.ColorFor("enemyPlayer")
     elseif kind == "npc" and not safe(UnitIsTapDenied, unit) then c = NC.ColorFor("npc") end
-    if c then bar:SetStatusBarColor(c[1], c[2], c[3]) end
+    if not c then return end
+    local bar = frame.healthBar
+    if bar and bar.SetStatusBarColor then bar:SetStatusBarColor(c[1], c[2], c[3]) end
+    -- Far-away plates show only a name, colored by the game (red for
+    -- hostile). Color that name too; full plates keep their white name.
+    local name = frame.name
+    if name and name.SetTextColor and NC.NameColored(frame) then
+        name:SetTextColor(c[1], c[2], c[3])
+        if name.SetVertexColor then name:SetVertexColor(c[1], c[2], c[3]) end
+    end
+end
+
+-- Is the game coloring this plate's name (name-only / far away)?
+function NC.NameColored(frame)
+    local o = frame.optionTable
+    if o and (o.colorNameBySelection or o.colorNameWithExtendedColors) then return true end
+    local bar = frame.healthBar
+    if bar and bar.IsShown and not bar:IsShown() then return true end
+    if bar and bar.GetAlpha and (bar:GetAlpha() or 1) < 0.05 then return true end
+    return false
 end
 
 -- Turning it off: let the game repaint its own colors (it skips repainting
@@ -95,16 +112,19 @@ function NC.RefreshAll()
     if not C_NamePlate or not C_NamePlate.GetNamePlates then return end
     for _, plate in ipairs(safe(C_NamePlate.GetNamePlates) or {}) do
         local f = plate.UnitFrame
-        if f and f.healthBar then
-            f.healthBar.r, f.healthBar.g, f.healthBar.b = nil, nil, nil
+        if f then
+            if f.healthBar then f.healthBar.r, f.healthBar.g, f.healthBar.b = nil, nil, nil end
             if CompactUnitFrame_UpdateHealthColor then pcall(CompactUnitFrame_UpdateHealthColor, f) end
+            if CompactUnitFrame_UpdateName then pcall(CompactUnitFrame_UpdateName, f) end
             NC.Paint(f)
         end
     end
 end
 
-if hooksecurefunc and type(CompactUnitFrame_UpdateHealthColor) == "function" then
-    hooksecurefunc("CompactUnitFrame_UpdateHealthColor", NC.Paint)
+if hooksecurefunc then
+    for _, fn in ipairs({ "CompactUnitFrame_UpdateHealthColor", "CompactUnitFrame_UpdateName", "CompactUnitFrame_UpdateNameColor" }) do
+        if type(_G[fn]) == "function" then hooksecurefunc(fn, NC.Paint) end
+    end
 end
 
 if CreateFrame then
