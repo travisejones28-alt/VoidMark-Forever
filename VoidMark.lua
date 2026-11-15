@@ -214,6 +214,18 @@ VoidMark.options = {
 						if VoidMarkNameplateColors then VoidMarkNameplateColors.RefreshAll() end
 					end,
 				},
+				WindowStyle = {
+					name = "Window style",
+					desc = "Banner: the full VoidMark artwork. Compact: a slim bar with the hood and wordmark, so the list takes less room.",
+					type = "select",
+					order = 7.5,
+					values = { banner = "Banner", compact = "Compact" },
+					get = function() return VoidMark.db.profile.WindowStyle == "compact" and "compact" or "banner" end,
+					set = function(_, value)
+						if VoidMark.VoidMark and VoidMark.VoidMark.SetStyle then VoidMark.VoidMark:SetStyle(value)
+						else VoidMark.db.profile.WindowStyle = value end
+					end,
+				},
 				ShowOnDetection = {
 					name = L["ShowOnDetection"],
 					desc = L["ShowOnDetectionDescription"],

@@ -18,8 +18,13 @@ VM.ROW_KOS = {0.38, 0.035, 0.05}
 VM.ROW_STEALTH = {0.20, 0.045, 0.31}
 
 -- Roomier header geometry; existing custom widths remain user-controlled.
-VM.HEADER_HEIGHT = 106
-VM.ROW_TOP_OFFSET = 108
+-- Banner style uses these; Compact style swaps in a 24px bar (VM:ApplyStyle).
+VM.BANNER_HEADER_HEIGHT = 106
+VM.BANNER_ROW_TOP_OFFSET = 108
+VM.COMPACT_HEADER_HEIGHT = 24
+VM.COMPACT_ROW_TOP_OFFSET = 26
+VM.HEADER_HEIGHT = VM.BANNER_HEADER_HEIGHT
+VM.ROW_TOP_OFFSET = VM.BANNER_ROW_TOP_OFFSET
 VM.DEFAULT_WIDTH_SCALE = 1.00
 VM.MIN_MAIN_WIDTH = 300
 VM.DEFAULT_MAIN_WIDTH = 400
@@ -232,6 +237,9 @@ local function BuildGearMenu(self, level)
         UIDropDownMenu_AddButton(info, level)
     end
 
+    Add(VM:IsCompact() and "Window: Compact (click for Banner)" or "Window: Banner (click for Compact)", function()
+        VM:SetStyle(VM:IsCompact() and "banner" or "compact")
+    end)
     Add("Statistics", function() if VoidMarkStats then VoidMarkStats:Toggle() end end)
     Add("Settings", function() if VoidMark.ShowConfig then VoidMark:ShowConfig() end end)
     Add("Kill Effects", function()
@@ -666,9 +674,112 @@ function VM:ApplyMainSkin()
         end
     end
 
-    VM:ReanchorMainRows()
+    VM:ApplyStyle()
     VM:ApplyOneTimeCompactWidth()
     VM:UpdateModeLabel()
+end
+
+-- Window style ---------------------------------------------------------------------
+-- "banner": the full artwork header. "compact": a 24px bar with the hood and the
+-- VOIDMARK wordmark cut from the same art, stats on one line, same buttons.
+function VM:IsCompact()
+    local p = VoidMark.db and VoidMark.db.profile
+    return p and p.WindowStyle == "compact" or false
+end
+
+function VM:SetStyle(style)
+    if style ~= "banner" and style ~= "compact" then return end
+    local p = VoidMark.db and VoidMark.db.profile
+    if not p then return end
+    p.WindowStyle = style
+    VM:ApplyStyle()
+end
+
+local HOOD_COORDS = {0.093, 0.210, 0.176, 0.645}
+local WORDMARK_COORDS = {0.254, 0.772, 0.059, 0.527}
+
+function VM:ApplyStyle()
+    local f = VoidMark.MainWindow
+    if not f then return end
+    -- The rows are secure buttons: moving them is refused in combat. Do it after.
+    if InCombatLockdown() then
+        VM.StylePending = true
+        if not VM.StyleWaiter then
+            VM.StyleWaiter = CreateFrame("Frame")
+            VM.StyleWaiter:SetScript("OnEvent", function(self)
+                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
+                if VM.StylePending then VM.StylePending = false; VM:ApplyStyle() end
+            end)
+        end
+        VM.StyleWaiter:RegisterEvent("PLAYER_REGEN_ENABLED")
+        return
+    end
+    local compact = VM:IsCompact()
+    VM.HEADER_HEIGHT = compact and VM.COMPACT_HEADER_HEIGHT or VM.BANNER_HEADER_HEIGHT
+    VM.ROW_TOP_OFFSET = compact and VM.COMPACT_ROW_TOP_OFFSET or VM.BANNER_ROW_TOP_OFFSET
+
+    if f.TitleBar then f.TitleBar:SetHeight(VM.HEADER_HEIGHT) end
+    if f.TitleClick then
+        f.TitleClick:ClearAllPoints()
+        f.TitleClick:SetPoint("TOPLEFT", f, "TOPLEFT", 1, -1)
+        f.TitleClick:SetPoint("BOTTOMRIGHT", f, "TOPRIGHT", -92, -(VM.HEADER_HEIGHT + 1))
+    end
+    if f.VoidMarkGeneratedHeader then f.VoidMarkGeneratedHeader:SetShown(not compact) end
+
+    if compact and not f.VoidMarkCompactHood then
+        local art = "Interface\\AddOns\\VoidMarkForever\\Textures\\VoidMarkGeneratedHeader.tga"
+        local hood = f:CreateTexture(nil, "ARTWORK")
+        hood:SetTexture(art); hood:SetTexCoord(HOOD_COORDS[1], HOOD_COORDS[2], HOOD_COORDS[3], HOOD_COORDS[4])
+        hood:SetSize(20, 20); hood:SetPoint("TOPLEFT", f, "TOPLEFT", 4, -2)
+        f.VoidMarkCompactHood = hood
+        local word = f:CreateTexture(nil, "ARTWORK")
+        word:SetTexture(art); word:SetTexCoord(WORDMARK_COORDS[1], WORDMARK_COORDS[2], WORDMARK_COORDS[3], WORDMARK_COORDS[4])
+        word:SetSize(78, 18); word:SetPoint("LEFT", hood, "RIGHT", 2, 0)
+        f.VoidMarkCompactWordmark = word
+        local line = f:CreateTexture(nil, "ARTWORK")
+        line:SetTexture("Interface\\Buttons\\WHITE8X8")
+        line:SetVertexColor(VM.PURPLE[1], VM.PURPLE[2], VM.PURPLE[3], 0.7)
+        line:SetHeight(1)
+        line:SetPoint("TOPLEFT", f, "TOPLEFT", 3, -(VM.COMPACT_HEADER_HEIGHT))
+        line:SetPoint("TOPRIGHT", f, "TOPRIGHT", -3, -(VM.COMPACT_HEADER_HEIGHT))
+        f.VoidMarkCompactLine = line
+    end
+    for _, t in ipairs({f.VoidMarkCompactHood, f.VoidMarkCompactWordmark, f.VoidMarkCompactLine}) do
+        if t then t:SetShown(compact) end
+    end
+
+    -- Buttons along the top: close, gear, GT, then the list/count label.
+    local close, gear, gt, mode = f.CloseButton, f.VoidMarkGearButton, f.VoidMarkGTButton, f.VoidMarkModeButton
+    if close then
+        close:ClearAllPoints()
+        if compact then close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -5) else close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -7, -29) end
+    end
+    if mode then
+        mode:ClearAllPoints()
+        if compact and gt then mode:SetPoint("RIGHT", gt, "LEFT", -6, 0) else mode:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6) end
+    end
+
+    -- Stats: two blocks on the banner's lower edge, or one line after the wordmark.
+    local left, right = f.VoidMarkGTCompactTextLeft, f.VoidMarkGTCompactTextRight
+    if f.VoidMarkGTCompactFrame then
+        f.VoidMarkGTCompactFrame:ClearAllPoints()
+        if compact then f.VoidMarkGTCompactFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 108, -5)
+        else f.VoidMarkGTCompactFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -67) end
+    end
+    if left then left:SetWidth(compact and 74 or 150) end
+    if right then
+        right:ClearAllPoints()
+        if compact and left then
+            right:SetPoint("LEFT", left, "RIGHT", 4, 0); right:SetJustifyH("LEFT"); right:SetWidth(70)
+        else
+            right:SetPoint("TOPRIGHT", f, "TOPRIGHT", -12, -67); right:SetJustifyH("RIGHT"); right:SetWidth(112)
+        end
+        -- A narrow compact window has no room for the second block.
+        right:SetShown(not compact or (f:GetWidth() or 0) >= 380)
+    end
+
+    VM:ReanchorMainRows()
+    if VoidMark.ResizeMainWindow then pcall(VoidMark.ResizeMainWindow, VoidMark) end
 end
 
 function VM:StyleRow(num, name, desc, opacity)

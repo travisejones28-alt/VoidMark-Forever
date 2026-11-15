@@ -59,7 +59,7 @@ obj=function(name)
   local methods={
    SetScript=function(s,key,fn)s.scripts[key]=fn end,GetScript=function(s,key)return s.scripts[key] end,
    RegisterEvent=function(s,e,handler)s.events[e]=handler or true end,UnregisterEvent=function(s,e)s.events[e]=nil end,UnregisterAllEvents=function(s)s.events={}end,
-   Show=function(s)s.shown=true end,Hide=function(s)s.shown=false end,IsShown=function(s)return s.shown end,IsEnabled=function()return true end,
+   Show=function(s)s.shown=true end,Hide=function(s)s.shown=false end,IsShown=function(s)return s.shown end,SetShown=function(s,v)s.shown=v and true or false end,IsEnabled=function()return true end,
    GetName=function(s)return s.name end,GetParent=function(s)return s.parent or UIParent end,
    GetWidth=function(s)return s.width end,GetHeight=function(s)return s.height end,
    SetResizeBounds=function(s,minW,minH,maxW,maxH)

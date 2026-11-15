@@ -301,3 +301,26 @@ do
     assert(#PN:Note('x')==200);PN:SetNote('x','')
 end
 print('PASS: stealth after plate gone, loss fallback, fight map, notes and tags')
+
+-- 1.2.19: Compact window style - slim 24px bar, rows move up, back to the banner.
+do
+    local VM=VoidMark.VoidMark
+    local f=VoidMark.MainWindow
+    assert(VM and f and VM.ApplyStyle,'window style missing')
+    VM:SetStyle('compact')
+    assert(VoidMark.db.profile.WindowStyle=='compact' and VM:IsCompact())
+    assert(VM.HEADER_HEIGHT==24 and VM.ROW_TOP_OFFSET==26,'compact geometry')
+    assert(f.VoidMarkCompactHood and f.VoidMarkCompactHood:IsShown(),'hood icon')
+    assert(not f.VoidMarkGeneratedHeader:IsShown(),'banner still shown in compact')
+    VM:SetStyle('bogus');assert(VM:IsCompact(),'bad style accepted')
+    -- In combat the change waits for combat to end (secure rows).
+    TEST_IN_COMBAT=true
+    VM:SetStyle('banner')
+    assert(VM.ROW_TOP_OFFSET==26 and VM.StylePending,'style moved secure rows in combat')
+    TEST_IN_COMBAT=false
+    VM.StyleWaiter:GetScript('OnEvent')(VM.StyleWaiter,'PLAYER_REGEN_ENABLED')
+    assert(VM.HEADER_HEIGHT==106 and VM.ROW_TOP_OFFSET==108,'banner geometry')
+    assert(f.VoidMarkGeneratedHeader:IsShown() and not f.VoidMarkCompactHood:IsShown(),'banner back')
+    VoidMark.db.profile.WindowStyle=nil
+end
+print('PASS: Compact / Banner window style')
