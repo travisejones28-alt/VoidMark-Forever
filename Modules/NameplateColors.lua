@@ -139,3 +139,83 @@ if CreateFrame then
     end)
     NC.frame = f
 end
+
+-- Small window (VoidMark gear menu > Nameplate Colors): on/off and the two
+-- color dropdowns. Same settings as Settings > General.
+local function hex(rgb)
+    if not rgb then return "ffffffff" end
+    return string.format("ff%02x%02x%02x", rgb[1] * 255, rgb[2] * 255, rgb[3] * 255)
+end
+local function setKey(field, key)
+    local p = profile(); if not p then return end
+    p[field] = key
+    NC.RefreshAll()
+    if NC.window and NC.window:IsShown() then NC.UpdateWindow() end
+end
+local function colorDropdown(parent, field, default, y, label)
+    local l = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    l:SetPoint("TOPLEFT", 16, y); l:SetText(label)
+    local dd = CreateFrame("Frame", nil, parent, "UIDropDownMenuTemplate")
+    dd:SetPoint("TOPLEFT", 120, y + 6)
+    if UIDropDownMenu_SetWidth then UIDropDownMenu_SetWidth(dd, 120) end
+    if UIDropDownMenu_Initialize then
+        UIDropDownMenu_Initialize(dd, function(_, level)
+            for _, k in ipairs(NC.ORDER) do
+                local c = NC.COLORS[k]
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = c.rgb and ("|c" .. hex(c.rgb) .. c.name .. "|r") or c.name
+                info.value = k
+                local p = profile()
+                info.checked = ((p and p[field]) or default) == k
+                info.func = function() setKey(field, k); CloseDropDownMenus() end
+                UIDropDownMenu_AddButton(info, level)
+            end
+        end)
+    end
+    dd.field, dd.default = field, default
+    return dd
+end
+function NC.UpdateWindow()
+    local w = NC.window; if not w then return end
+    local p = profile()
+    w.enable:SetChecked(NC.Enabled())
+    for _, dd in ipairs({ w.player, w.npc }) do
+        local key = (p and p[dd.field]) or dd.default
+        local c = NC.COLORS[key] or NC.COLORS[dd.default]
+        if UIDropDownMenu_SetText then UIDropDownMenu_SetText(dd, c.rgb and ("|c" .. hex(c.rgb) .. c.name .. "|r") or c.name) end
+        if UIDropDownMenu_EnableDropDown and UIDropDownMenu_DisableDropDown then
+            if NC.Enabled() then UIDropDownMenu_EnableDropDown(dd) else UIDropDownMenu_DisableDropDown(dd) end
+        end
+    end
+end
+function NC.ToggleWindow()
+    if not NC.window then
+        local w = CreateFrame("Frame", "VoidMarkNameplateColorsFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+        w:SetSize(300, 150); w:SetPoint("CENTER"); w:SetFrameStrata("DIALOG")
+        w:SetMovable(true); w:EnableMouse(true); w:RegisterForDrag("LeftButton")
+        w:SetScript("OnDragStart", w.StartMoving); w:SetScript("OnDragStop", w.StopMovingOrSizing)
+        if w.SetBackdrop then
+            w:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 14, insets = { left = 3, right = 3, top = 3, bottom = 3 } })
+            w:SetBackdropColor(0.07, 0.05, 0.12, 0.95); w:SetBackdropBorderColor(0.6, 0.4, 0.9, 1)
+        end
+        local t = w:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        t:SetPoint("TOPLEFT", 14, -12); t:SetText("Nameplate Colors")
+        local close = CreateFrame("Button", nil, w, "UIPanelCloseButton")
+        close:SetPoint("TOPRIGHT", -2, -2)
+        local enable = CreateFrame("CheckButton", nil, w, "UICheckButtonTemplate")
+        enable:SetPoint("TOPLEFT", 12, -36); enable:SetSize(24, 24)
+        local el = w:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        el:SetPoint("LEFT", enable, "RIGHT", 4, 0); el:SetText("Color nameplates")
+        enable:SetScript("OnClick", function(b)
+            local p = profile(); if p then p.NameplateColors = b:GetChecked() and true or false end
+            NC.RefreshAll(); NC.UpdateWindow()
+        end)
+        w.enable = enable
+        w.player = colorDropdown(w, "NameplatePlayerColor", NC.DEFAULT_PLAYER, -74, "Enemy players")
+        w.npc = colorDropdown(w, "NameplateNpcColor", NC.DEFAULT_NPC, -108, "NPCs")
+        if UISpecialFrames then table.insert(UISpecialFrames, "VoidMarkNameplateColorsFrame") end
+        w:Hide()
+        NC.window = w
+    end
+    if NC.window:IsShown() then NC.window:Hide() else NC.UpdateWindow(); NC.window:Show() end
+end

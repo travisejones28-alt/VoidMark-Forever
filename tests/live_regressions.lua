@@ -202,6 +202,11 @@ do
     p2.healthBar.c=nil;NC.Paint(p2);assert(not p2.healthBar.c,'NPCs: game default')
     assert(NC.Choices().purple=='Purple' and #NC.ORDER==11,'dropdown choices')
     VoidMark.db.profile.NameplatePlayerColor=nil;VoidMark.db.profile.NameplateNpcColor=nil
+    -- Gear menu window opens and shows both dropdowns.
+    NC.ToggleWindow();assert(NC.window and NC.window:IsShown() and NC.window.player and NC.window.npc,'Nameplate Colors window')
+    NC.window.enable:SetChecked(false);NC.window.enable:GetScript('OnClick')(NC.window.enable)
+    assert(VoidMark.db.profile.NameplateColors==false,'window checkbox turns it off')
+    VoidMark.db.profile.NameplateColors=nil;NC.ToggleWindow();assert(not NC.window:IsShown())
     VoidMark.db.profile.NameplateColors=false
     p2.healthBar.c=nil;NC.Paint(p2);assert(not p2.healthBar.c,'off: game colors')
     VoidMark.db.profile.NameplateColors=nil

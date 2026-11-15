@@ -275,6 +275,9 @@ local function BuildGearMenu(self, level)
         VoidMarkDB.VoidMarkKOSWho = VoidMarkDB.VoidMarkKOSWho or {}
         VoidMarkDB.VoidMarkKOSWho.enabled = not (VoidMarkDB.VoidMarkKOSWho.enabled ~= false)
     end)
+    Add("Nameplate Colors", function()
+        if VoidMarkNameplateColors and VoidMarkNameplateColors.ToggleWindow then VoidMarkNameplateColors.ToggleWindow() end
+    end)
     Add("Taunt", function()
         if VoidMarkTaunt and VoidMarkTaunt.Toggle then VoidMarkTaunt.Toggle() end
     end)
