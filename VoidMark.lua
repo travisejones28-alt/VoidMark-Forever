@@ -214,18 +214,6 @@ VoidMark.options = {
 						if VoidMarkNameplateColors then VoidMarkNameplateColors.RefreshAll() end
 					end,
 				},
-				WindowStyle = {
-					name = "Window style",
-					desc = "Banner: the full VoidMark artwork. Compact: a slim bar with the hood and wordmark, so the list takes less room.",
-					type = "select",
-					order = 7.5,
-					values = { banner = "Banner", compact = "Compact" },
-					get = function() return VoidMark.db.profile.WindowStyle == "compact" and "compact" or "banner" end,
-					set = function(_, value)
-						if VoidMark.VoidMark and VoidMark.VoidMark.SetStyle then VoidMark.VoidMark:SetStyle(value)
-						else VoidMark.db.profile.WindowStyle = value end
-					end,
-				},
 				ShowOnDetection = {
 					name = L["ShowOnDetection"],
 					desc = L["ShowOnDetectionDescription"],
@@ -294,6 +282,50 @@ VoidMark.options = {
 					type = "description",
 					order = 1,
 					fontSize = "medium",
+				},
+				WindowStyle = {
+					name = "Window style",
+					desc = "Banner: the full VoidMark artwork. Compact: a slim bar with the hood and wordmark, so the list takes less room.",
+					type = "select",
+					order = 1.7,
+					values = { banner = "Banner", compact = "Compact" },
+					get = function() return VoidMark.db.profile.WindowStyle == "compact" and "compact" or "banner" end,
+					set = function(_, value)
+						if VoidMark.VoidMark and VoidMark.VoidMark.SetStyle then VoidMark.VoidMark:SetStyle(value)
+						else VoidMark.db.profile.WindowStyle = value end
+					end,
+				},
+				EnemyMovesHeader = {
+					name = "Enemy Moves",
+					type = "header",
+					order = 1.2,
+				},
+				EnemyMovesEnabled = {
+					name = "Enable Enemy Moves",
+					desc = "Show the enemy cooldown tracker for your target.",
+					type = "toggle",
+					order = 1.3,
+					get = function() return VoidMarkEnemyMoves and VoidMarkEnemyMoves:IsEnabled() end,
+					set = function(_, v) if VoidMarkEnemyMoves then VoidMarkEnemyMoves:SetEnabled(v) end end,
+				},
+				EnemyMovesTest = {
+					name = function() return (VoidMarkEnemyMoves and VoidMarkEnemyMoves:IsTesting()) and "Stop test" or "Test window" end,
+					desc = "Shows a sample Rogue with cooldowns running, so you can place and size the tracker. Stops when you click again or change target.",
+					type = "execute",
+					order = 1.4,
+					func = function() if VoidMarkEnemyMoves then VoidMarkEnemyMoves:ToggleTest() end end,
+				},
+				EnemyMovesOptions = {
+					name = "Position and size...",
+					desc = "Lock, scale and opacity of the Enemy Moves window.",
+					type = "execute",
+					order = 1.5,
+					func = function() if VoidMarkEnemyMoves then VoidMarkEnemyMoves:ToggleOptions() end end,
+				},
+				DisplayHeader = {
+					name = "VoidMark window",
+					type = "header",
+					order = 1.6,
 				},
 				ShowNearbyList = {
 					name = L["ShowNearbyList"],

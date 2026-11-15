@@ -1160,6 +1160,11 @@ function EM:IsTesting() return testMode and true or false end
 function EM:ToggleTest()
     if testMode then EM:StopTest() else EM:StartTest() end
     if options and options.TestButton then options.TestButton:SetText(testMode and "Stop test" or "Test window") end
+    -- Relabel the button on VoidMark's Display options page.
+    if LibStub then
+        local ok,reg=pcall(LibStub,"AceConfigRegistry-3.0",true)
+        if ok and reg then pcall(reg.NotifyChange,reg,"VoidMark") end
+    end
     return testMode
 end
 
