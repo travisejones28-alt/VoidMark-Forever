@@ -335,3 +335,17 @@ do
     VoidMark.db.profile.WindowStyle=nil
 end
 print('PASS: Compact / Banner window style')
+
+-- 1.2.25: Enemy Moves test window from the options window / gear menu (no slash).
+do
+    local EM=VoidMarkEnemyMoves
+    assert(EM.ToggleTest and EM.IsTesting,'test window functions')
+    local db=VoidMarkDB.VoidMarkEnemyMoves;local wasEnabled=db.enabled
+    db.enabled=false
+    assert(EM:ToggleTest()==true and EM:IsTesting(),'test did not start')
+    assert(VoidMarkEnemyMovesFrame:IsShown(),'test window hidden while Enemy Moves is off')
+    assert(EM:ToggleTest()==false and not EM:IsTesting(),'test did not stop')
+    assert(not VoidMarkEnemyMovesFrame:IsShown(),'test window stayed after stop')
+    db.enabled=wasEnabled
+end
+print('PASS: Enemy Moves test window toggles on and off')

@@ -263,6 +263,10 @@ local function BuildGearMenu(self, level)
         and VoidMarkEnemyMoves.IsEnabled
         and VoidMarkEnemyMoves:IsEnabled()
 
+    local testing = VoidMarkEnemyMoves and VoidMarkEnemyMoves.IsTesting and VoidMarkEnemyMoves:IsTesting()
+    Add(testing and "Enemy Moves: Stop test" or "Enemy Moves: Test window", function()
+        if VoidMarkEnemyMoves and VoidMarkEnemyMoves.ToggleTest then VoidMarkEnemyMoves:ToggleTest() end
+    end)
     Add(enemyMovesEnabled and "Enemy Moves: ON" or "Enemy Moves: OFF", function()
         if VoidMarkEnemyMoves and VoidMarkEnemyMoves.ToggleEnabled then
             VoidMarkEnemyMoves:ToggleEnabled()

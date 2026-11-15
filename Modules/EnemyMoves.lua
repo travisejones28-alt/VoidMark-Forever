@@ -691,7 +691,7 @@ end
 function EM:Refresh()
     BuildUI()
     local db=DB()
-    if not db.enabled then frame:Hide() return end
+    if not db.enabled and not testMode then frame:Hide() return end
     local e=CurrentEnemy()
     if not e then frame:Hide() return end
 
@@ -762,7 +762,7 @@ end
 local function EnsureOptions()
     if options then return options end
     options=CreateFrame("Frame","VoidMarkEnemyMovesOptions",UIParent,"BackdropTemplate")
-    options:SetSize(270,205) options:SetPoint("CENTER") options:SetFrameStrata("DIALOG") options:SetMovable(true) options:EnableMouse(true)
+    options:SetSize(270,240) options:SetPoint("CENTER") options:SetFrameStrata("DIALOG") options:SetMovable(true) options:EnableMouse(true)
     options:RegisterForDrag("LeftButton") options:SetScript("OnDragStart",options.StartMoving) options:SetScript("OnDragStop",options.StopMovingOrSizing)
     options:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8X8",edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",edgeSize=10})
     options:SetBackdropColor(0.018,0.010,0.026,0.98) options:SetBackdropBorderColor(0.48,0.16,0.72,0.95)
@@ -791,8 +791,17 @@ local function EnsureOptions()
     end
     options.Scale=Slider("VoidMarkEnemyMovesScale","Scale",0.50,1.50,0.05,-105,function(_,v) DB().scale=v ApplyAppearance() end)
     options.Opacity=Slider("VoidMarkEnemyMovesOpacity","Overall opacity",0.35,1.0,0.05,-150,function(_,v) DB().frameOpacity=v ApplyAppearance() end)
+    local test=CreateFrame("Button",nil,options,"UIPanelButtonTemplate")
+    test:SetSize(120,22) test:SetPoint("BOTTOMLEFT",14,12)
+    test:SetText("Test window")
+    test:SetScript("OnClick",function() EM:ToggleTest() end)
+    options.TestButton=test
+    local unlockNote=options:CreateFontString(nil,"OVERLAY","GameFontDisableSmall")
+    unlockNote:SetPoint("LEFT",test,"RIGHT",8,0) unlockNote:SetWidth(120) unlockNote:SetJustifyH("LEFT")
+    unlockNote:SetText("Untick Lock to drag it.")
     options:SetScript("OnShow",function()
         local db=DB()
+        options.TestButton:SetText(testMode and "Stop test" or "Test window")
         options.Enabled:SetChecked(db.enabled) options.Lock:SetChecked(db.locked)
         options.Scale:SetValue(db.scale) options.Opacity:SetValue(db.frameOpacity)
     end)
@@ -1133,6 +1142,22 @@ local function TestStart()
     fake("SPRINT",46,2983)
     fake("POTION",83,nil)
     EM:Refresh()
+end
+
+-- Test window: a sample Rogue with cooldowns running, so you can place and size
+-- the tracker without an enemy. Ends with Stop test or when you change target.
+function EM:StartTest() TestStart() end
+function EM:StopTest()
+    testMode=false
+    enemies[testGUID]=nil
+    UpdateTarget()
+    EM:Refresh()
+end
+function EM:IsTesting() return testMode and true or false end
+function EM:ToggleTest()
+    if testMode then EM:StopTest() else EM:StartTest() end
+    if options and options.TestButton then options.TestButton:SetText(testMode and "Stop test" or "Test window") end
+    return testMode
 end
 
 SLASH_VOIDMARKENEMYMOVES1="/emoves"
