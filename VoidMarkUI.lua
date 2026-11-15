@@ -73,6 +73,13 @@ end
 -- Blizzard's class-icon lookup table; the full class name never needs to be
 -- shown in the row.
 local function ClassIconTag(class, size)
+    -- Forever's client has the modern class icon atlases; the old character-create
+    -- sheet no longer lines up with CLASS_ICON_TCOORDS there (wrong icons showed).
+    if type(class) == "string" and C_Texture and C_Texture.GetAtlasInfo then
+        local atlas = "classicon-" .. class:lower()
+        local ok, info = pcall(C_Texture.GetAtlasInfo, atlas)
+        if ok and info then return string.format("|A:%s:%d:%d|a", atlas, size or 13, size or 13) end
+    end
     local coords = class and CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[class]
     if not coords then return "" end
 
@@ -84,7 +91,7 @@ local function ClassIconTag(class, size)
     local bottom = math.floor((coords[4] or 1) * atlasSize + 0.5)
 
     return string.format(
-        "|TInterface\\GLUES\\CHARACTERCREATE\\UI-CHARACTERCREATE-CLASSES:%d:%d:0:0:%d:%d:%d:%d:%d:%d|t",
+        "|TInterface\\TargetingFrame\\UI-Classes-Circles:%d:%d:0:0:%d:%d:%d:%d:%d:%d|t",
         size, size, atlasSize, atlasSize, left, right, top, bottom
     )
 end
@@ -1023,6 +1030,10 @@ function VM:StyleRow(num, name, desc, opacity)
     row.StatusBar:SetStatusBarColor(cr, cg, cb, alpha)
 
     local rightColumnsWidth = 46 + 4 + 42 + 3 + 24 + 3 + 20 + 3 + recordWidth + 4
+    if compact then
+        -- Only level + class (and a run-back timer when there is one) on the right.
+        rightColumnsWidth = 84 + 3 + ((runBackTime ~= "") and 52 or 0)
+    end
     row.LeftText:SetWidth(math.max(40, row:GetWidth() - rightColumnsWidth - 4))
 end
 
