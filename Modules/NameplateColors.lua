@@ -175,8 +175,30 @@ local function colorDropdown(parent, field, default, y, label)
     dd.field, dd.default = field, default
     return dd
 end
+-- Far-away mobs show the game's own floating name (not a nameplate), which
+-- addons can't recolor. Two game settings help: show nameplates farther out,
+-- or hide those floating NPC names.
+NC.DISTANCES = { 20, 30, 41 }
+local function cvar(name) local ok, v = pcall(GetCVar, name); if ok then return v end end
+local function setCVar(name, v) if SetCVar then pcall(SetCVar, name, v) end end
+function NC.Distance() return tonumber(cvar("nameplateMaxDistance")) end
+function NC.SetDistance(yards)
+    setCVar("nameplateMaxDistance", tostring(yards))
+    return NC.Distance()
+end
+function NC.FloatingNamesHidden() return cvar("UnitNameNPC") == "0" end
+function NC.SetFloatingNamesHidden(hide)
+    local v = hide and "0" or "1"
+    for _, n in ipairs({ "UnitNameNPC", "UnitNameHostleNPC", "UnitNameEnemyNPC" }) do setCVar(n, v) end
+end
+
 function NC.UpdateWindow()
     local w = NC.window; if not w then return end
+    if w.hideNames then w.hideNames:SetChecked(NC.FloatingNamesHidden()) end
+    if w.distance and UIDropDownMenu_SetText then
+        local d = NC.Distance()
+        UIDropDownMenu_SetText(w.distance, d and (math.floor(d + 0.5) .. " yards") or "Game default")
+    end
     local p = profile()
     w.enable:SetChecked(NC.Enabled())
     for _, dd in ipairs({ w.player, w.npc }) do
@@ -191,7 +213,7 @@ end
 function NC.ToggleWindow()
     if not NC.window then
         local w = CreateFrame("Frame", "VoidMarkNameplateColorsFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
-        w:SetSize(300, 150); w:SetPoint("CENTER"); w:SetFrameStrata("DIALOG")
+        w:SetSize(300, 230); w:SetPoint("CENTER"); w:SetFrameStrata("DIALOG")
         w:SetMovable(true); w:EnableMouse(true); w:RegisterForDrag("LeftButton")
         w:SetScript("OnDragStart", w.StartMoving); w:SetScript("OnDragStop", w.StopMovingOrSizing)
         if w.SetBackdrop then
@@ -213,6 +235,36 @@ function NC.ToggleWindow()
         w.enable = enable
         w.player = colorDropdown(w, "NameplatePlayerColor", NC.DEFAULT_PLAYER, -74, "Enemy players")
         w.npc = colorDropdown(w, "NameplateNpcColor", NC.DEFAULT_NPC, -108, "NPCs")
+        local dl = w:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        dl:SetPoint("TOPLEFT", 16, -142); dl:SetText("Nameplate range")
+        local dd = CreateFrame("Frame", nil, w, "UIDropDownMenuTemplate")
+        dd:SetPoint("TOPLEFT", 120, -136)
+        if UIDropDownMenu_SetWidth then UIDropDownMenu_SetWidth(dd, 120) end
+        if UIDropDownMenu_Initialize then
+            UIDropDownMenu_Initialize(dd, function(_, level)
+                for _, y in ipairs(NC.DISTANCES) do
+                    local info = UIDropDownMenu_CreateInfo()
+                    info.text = y .. " yards" .. (y == 20 and " (game default)" or "")
+                    info.checked = math.floor((NC.Distance() or 0) + 0.5) == y
+                    info.func = function()
+                        local got = NC.SetDistance(y); CloseDropDownMenus(); NC.UpdateWindow()
+                        if got and got < y and DEFAULT_CHAT_FRAME then
+                            DEFAULT_CHAT_FRAME:AddMessage("|cffb45cffVoidMark:|r the game caps nameplate range at " .. math.floor(got + 0.5) .. " yards.")
+                        end
+                    end
+                    UIDropDownMenu_AddButton(info, level)
+                end
+            end)
+        end
+        w.distance = dd
+        local hide = CreateFrame("CheckButton", nil, w, "UICheckButtonTemplate")
+        hide:SetPoint("TOPLEFT", 12, -176); hide:SetSize(24, 24)
+        local hl = w:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        hl:SetPoint("LEFT", hide, "RIGHT", 4, 0); hl:SetWidth(250); hl:SetJustifyH("LEFT")
+        hl:SetText("Hide far-away NPC names (the red text with no nameplate - the game won't let addons recolor it)")
+        hl:SetWordWrap(true)
+        hide:SetScript("OnClick", function(b) NC.SetFloatingNamesHidden(b:GetChecked() and true or false); NC.UpdateWindow() end)
+        w.hideNames = hide
         if UISpecialFrames then table.insert(UISpecialFrames, "VoidMarkNameplateColorsFrame") end
         w:Hide()
         NC.window = w

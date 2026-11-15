@@ -206,6 +206,13 @@ do
     NC.ToggleWindow();assert(NC.window and NC.window:IsShown() and NC.window.player and NC.window.npc,'Nameplate Colors window')
     NC.window.enable:SetChecked(false);NC.window.enable:GetScript('OnClick')(NC.window.enable)
     assert(VoidMark.db.profile.NameplateColors==false,'window checkbox turns it off')
+    -- Range and far-away names are game settings.
+    local cv={nameplateMaxDistance='20',UnitNameNPC='1'};local oGet,oSet=GetCVar,SetCVar
+    GetCVar=function(k) return cv[k] end;SetCVar=function(k,v) cv[k]=(k=='nameplateMaxDistance' and tonumber(v)>41) and '41' or v end
+    assert(NC.SetDistance(41)==41 and cv.nameplateMaxDistance=='41','range 41')
+    NC.SetFloatingNamesHidden(true);assert(NC.FloatingNamesHidden() and cv.UnitNameNPC=='0','far names hidden')
+    NC.SetFloatingNamesHidden(false);assert(cv.UnitNameNPC=='1')
+    GetCVar,SetCVar=oGet,oSet
     VoidMark.db.profile.NameplateColors=nil;NC.ToggleWindow();assert(not NC.window:IsShown())
     VoidMark.db.profile.NameplateColors=false
     p2.healthBar.c=nil;NC.Paint(p2);assert(not p2.healthBar.c,'off: game colors')
