@@ -7,7 +7,8 @@ local EM = VoidMarkEnemyMoves
 local VERSION = "1.3.4"
 local MAX_ROWS = 8
 local ROW_H, ROW_GAP = 22, 3
-local HEADER_H, STATUS_H = 63, 22
+-- No banner: the target line is the top of the window (OPT sits on it).
+local HEADER_H, STATUS_H = 5, 22
 local FRAME_W = 270
 
 local C = {
@@ -450,6 +451,7 @@ local function BuildUI()
     -- Shift the crop right so the logo fills the header cleanly.
     frame.Banner:SetTexCoord(0.20,0.90,0.00,1.00)
     frame.Banner:SetAlpha(0.98)
+    frame.Banner:Hide()
 
     -- Dark lower band keeps module text readable while leaving the banner art
     -- visible above and behind it.
@@ -479,8 +481,7 @@ local function BuildUI()
     frame.Version:Hide()
 
     frame.OptionsButton=CreateFrame("Button",nil,frame,"BackdropTemplate")
-    frame.OptionsButton:SetSize(38,18)
-    frame.OptionsButton:SetPoint("TOPRIGHT",-6,-5)
+    frame.OptionsButton:SetSize(32,16)
     frame.OptionsButton:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8X8",edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",edgeSize=6})
     frame.OptionsButton:SetBackdropColor(0.045,0.020,0.070,0.98)
     frame.OptionsButton:SetBackdropBorderColor(0.48,0.15,0.76,1)
@@ -531,7 +532,9 @@ local function BuildUI()
 
     frame.Status=frame:CreateFontString(nil,"OVERLAY","GameFontHighlightSmall")
     frame.Status:SetPoint("LEFT",frame.Target,"RIGHT",4,0)
-    frame.Status:SetPoint("RIGHT",frame.StatusBG,"RIGHT",-6,0)
+    frame.OptionsButton:SetPoint("RIGHT",frame.StatusBG,"RIGHT",-3,0)
+    frame.OptionsButton:SetFrameLevel(frame:GetFrameLevel()+5)
+    frame.Status:SetPoint("RIGHT",frame.OptionsButton,"LEFT",-5,0)
     frame.Status:SetJustifyH("RIGHT")
     frame.Status:SetWordWrap(false)
     frame.Status:SetShadowOffset(1,-1)
