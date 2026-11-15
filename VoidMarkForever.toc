@@ -1,6 +1,6 @@
 ## Interface: 16001
 ## Title: VoidMark
-## Version: 1.2.10
+## Version: 1.2.11
 ## Notes: VoidMark compact Shadow Priest WPvP intelligence and encounter tracking.
 ## Creator: Taliaa
 ## Author: Taliaa
@@ -57,3 +57,4 @@ Modules\MinimapButton.lua
 MCMarks.lua
 Compat\Detection.lua
 Compat\Events.lua
+AutoInvite.lua
