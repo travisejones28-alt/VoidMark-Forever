@@ -891,7 +891,8 @@ function VM:StyleRow(num, name, desc, opacity)
     local status = isKOS and "|cffff4d5dKOS|r" or ""
 
     -- Integrated corpse run timer.
-    local runBack = VoidMark.GetRunBackDisplay and VoidMark:GetRunBackDisplay(name) or nil
+    -- The compact window leaves run-back timers out (Banner still shows them).
+    local runBack = (not VM:IsCompact()) and VoidMark.GetRunBackDisplay and VoidMark:GetRunBackDisplay(name) or nil
     local runBackTime = ""
     local runBackColor = "|cffffd84d"
     if runBack then
@@ -994,9 +995,9 @@ function VM:StyleRow(num, name, desc, opacity)
         row.RightText:SetPoint("RIGHT", row.StatusBar, "RIGHT", -3, 0)
         row.RightText:SetWidth(40)
         row.RightText:SetText((lvl and (lvlColor .. lvl .. "|r ") or "") .. ClassIconTag(class, 14))
-        row.VoidMarkRunBackTime:ClearAllPoints()
-        row.VoidMarkRunBackTime:SetPoint("RIGHT", row.RightText, "LEFT", -4, 0)
+        row.VoidMarkRunBackTime:SetText("")
     end
+    row.VoidMarkRunBackTime:SetShown(not compact)
 
     if row.VoidMarkRunBackLabel then
         row.VoidMarkRunBackLabel:SetText("")
@@ -1032,7 +1033,7 @@ function VM:StyleRow(num, name, desc, opacity)
     local rightColumnsWidth = 46 + 4 + 42 + 3 + 24 + 3 + 20 + 3 + recordWidth + 4
     if compact then
         -- Only level + class (and a run-back timer when there is one) on the right.
-        rightColumnsWidth = 40 + 3 + ((runBackTime ~= "") and 52 or 0)
+        rightColumnsWidth = 40 + 3
     end
     row.LeftText:SetWidth(math.max(40, row:GetWidth() - rightColumnsWidth - 4))
 end
