@@ -985,15 +985,15 @@ function VM:StyleRow(num, name, desc, opacity)
     row.VoidMarkClassText:SetShown(not compact)
     row.VoidMarkThreatText:SetShown(not compact)
     if compact then
-        row.LeftText:SetText(ClassIconTag(class, 14) .. " " .. marker .. displayName)
+        row.LeftText:SetText(marker .. displayName)
         local lvl = tonumber(data and data.level)
         local mine = tonumber(VMAPI.UnitLevel and VoidMark:Readable(VMAPI.UnitLevel("player"))) or 0
         local lvlColor = (lvl and mine > 0 and lvl > mine) and "|cffffcf5a" or "|cffaaaaaa"
-        local className = class and ((LOCALIZED_CLASS_NAMES_MALE and LOCALIZED_CLASS_NAMES_MALE[class]) or (class:sub(1, 1) .. class:sub(2):lower())) or ""
+        -- The name is already in class color, so the class is just its icon.
         row.RightText:ClearAllPoints()
         row.RightText:SetPoint("RIGHT", row.StatusBar, "RIGHT", -3, 0)
-        row.RightText:SetWidth(84)
-        row.RightText:SetText((lvl and (lvlColor .. lvl .. "|r ") or "") .. className)
+        row.RightText:SetWidth(40)
+        row.RightText:SetText((lvl and (lvlColor .. lvl .. "|r ") or "") .. ClassIconTag(class, 14))
         row.VoidMarkRunBackTime:ClearAllPoints()
         row.VoidMarkRunBackTime:SetPoint("RIGHT", row.RightText, "LEFT", -4, 0)
     end
@@ -1032,7 +1032,7 @@ function VM:StyleRow(num, name, desc, opacity)
     local rightColumnsWidth = 46 + 4 + 42 + 3 + 24 + 3 + 20 + 3 + recordWidth + 4
     if compact then
         -- Only level + class (and a run-back timer when there is one) on the right.
-        rightColumnsWidth = 84 + 3 + ((runBackTime ~= "") and 52 or 0)
+        rightColumnsWidth = 40 + 3 + ((runBackTime ~= "") and 52 or 0)
     end
     row.LeftText:SetWidth(math.max(40, row:GetWidth() - rightColumnsWidth - 4))
 end
