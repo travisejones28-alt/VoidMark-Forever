@@ -171,3 +171,28 @@ do
     VoidMarkForever.LastDetection={}
 end
 print('PASS: hidden enemy flag is not cached; faction fallback detects at once')
+
+-- 1.2.12: nameplates - enemy players red, NPCs blue, tapped mobs untouched,
+-- remembered when Forever hides unit facts in combat; off restores the game's.
+do
+    local NC=VoidMarkNameplateColors
+    assert(NC,'NameplateColors module loaded')
+    local oG,oT,oIP=UnitGUID,UnitIsTapDenied,UnitIsPlayer
+    local guids={nameplate1='Player-1-enemy',nameplate2='Creature-0-1-2-3-4-5',nameplate3='Creature-0-9-9-9-9-9'}
+    UnitGUID=function(u) return guids[u] end
+    UnitIsTapDenied=function(u) return u=='nameplate3' end
+    local function bar() local b={};function b:SetStatusBarColor(r,g,bb) self.c={r,g,bb} end;return b end
+    local p1,p2,p3={unit='nameplate1',healthBar=bar()},{unit='nameplate2',healthBar=bar()},{unit='nameplate3',healthBar=bar()}
+    NC.Paint(p1);NC.Paint(p2);NC.Paint(p3)
+    assert(p1.healthBar.c and p1.healthBar.c[1]>0.8 and p1.healthBar.c[3]<0.2,'enemy player red')
+    assert(p2.healthBar.c and p2.healthBar.c[3]>0.9,'NPC blue')
+    assert(not p3.healthBar.c,'tapped mob left gray')
+    -- combat hides the GUID: still red (remembered)
+    UnitGUID=function() return SECRET end;UnitIsPlayer=function() return SECRET end
+    p1.healthBar.c=nil;NC.Paint(p1);assert(p1.healthBar.c and p1.healthBar.c[1]>0.8,'remembered in combat')
+    VoidMark.db.profile.NameplateColors=false
+    p2.healthBar.c=nil;NC.Paint(p2);assert(not p2.healthBar.c,'off: game colors')
+    VoidMark.db.profile.NameplateColors=nil
+    UnitGUID,UnitIsTapDenied,UnitIsPlayer=oG,oT,oIP
+end
+print('PASS: nameplates enemy players red, NPCs blue, tapped gray, remembered in combat, toggle off')

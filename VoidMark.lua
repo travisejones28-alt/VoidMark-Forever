@@ -176,6 +176,18 @@ VoidMark.options = {
 --						["Delver's Headquarters"] = L["Delver's Headquarters"],
 					},
 				},
+				NameplateColors = {
+					name = "Nameplate colors: enemy players red, NPCs blue",
+					desc = "Color enemy player nameplates red and NPC nameplates blue so players stand out. Tapped mobs stay gray.",
+					type = "toggle",
+					order = 7.5,
+					width = "full",
+					get = function(info) return VoidMark.db.profile.NameplateColors ~= false end,
+					set = function(info, value)
+						VoidMark.db.profile.NameplateColors = value
+						if VoidMarkNameplateColors then VoidMarkNameplateColors.RefreshAll() end
+					end,
+				},
 				ShowOnDetection = {
 					name = L["ShowOnDetection"],
 					desc = L["ShowOnDetectionDescription"],
@@ -1008,6 +1020,7 @@ VoidMark.optionsSlash = {
 
 local Default_Profile = {
 	profile = {
+		NameplateColors = true,
 		Colors = {
 			["Window"] = {
 				["Title"] = { r = 1, g = 1, b = 1, a = 1 },
