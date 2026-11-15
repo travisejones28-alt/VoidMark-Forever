@@ -307,20 +307,31 @@ do
     local VM=VoidMark.VoidMark
     local f=VoidMark.MainWindow
     assert(VM and f and VM.ApplyStyle,'window style missing')
+    f:SetWidth(400)
     VM:SetStyle('compact')
     assert(VoidMark.db.profile.WindowStyle=='compact' and VM:IsCompact())
-    assert(VM.HEADER_HEIGHT==24 and VM.ROW_TOP_OFFSET==26,'compact geometry')
+    assert(VM.HEADER_HEIGHT==22 and VM.ROW_TOP_OFFSET==24,'compact geometry')
+    assert(f:GetWidth()<=260,'compact window not narrowed')
+    assert(not f.VoidMarkGTCompactTextRight:IsShown(),'second stats block shown in compact')
+    assert(f.VoidMarkNextButton:IsShown() and f.VoidMarkPrevButton:IsShown(),'list arrows')
+    TaliaaGankTracker.totalKills=3;TaliaaGankTracker.currentStreak=2;TaliaaGankTracker:RefreshVoidMarkCompact()
+    assert(f.VoidMarkGTCompactTextLeft:GetText()=='K 3  K/S 2','compact stats: '..tostring(f.VoidMarkGTCompactTextLeft:GetText()))
+    local cur=VoidMark.db.profile.CurrentList;f.VoidMarkNextButton:GetScript('OnClick')()
+    assert(VoidMark.db.profile.CurrentList==(cur%5)+1,'next list');VoidMark.db.profile.CurrentList=cur
     assert(f.VoidMarkCompactHood and f.VoidMarkCompactHood:IsShown(),'hood icon')
     assert(not f.VoidMarkGeneratedHeader:IsShown(),'banner still shown in compact')
     VM:SetStyle('bogus');assert(VM:IsCompact(),'bad style accepted')
     -- In combat the change waits for combat to end (secure rows).
     TEST_IN_COMBAT=true
     VM:SetStyle('banner')
-    assert(VM.ROW_TOP_OFFSET==26 and VM.StylePending,'style moved secure rows in combat')
+    assert(VM.ROW_TOP_OFFSET==24 and VM.StylePending,'style moved secure rows in combat')
     TEST_IN_COMBAT=false
     VM.StyleWaiter:GetScript('OnEvent')(VM.StyleWaiter,'PLAYER_REGEN_ENABLED')
     assert(VM.HEADER_HEIGHT==106 and VM.ROW_TOP_OFFSET==108,'banner geometry')
     assert(f.VoidMarkGeneratedHeader:IsShown() and not f.VoidMarkCompactHood:IsShown(),'banner back')
+    assert(f:GetWidth()>=300,'banner width not restored')
+    TaliaaGankTracker:RefreshVoidMarkCompact()
+    assert(not tostring(f.VoidMarkGTCompactTextRight:GetText()):find('DK',1,true),'DK still shown')
     VoidMark.db.profile.WindowStyle=nil
 end
 print('PASS: Compact / Banner window style')

@@ -21,8 +21,9 @@ VM.ROW_STEALTH = {0.20, 0.045, 0.31}
 -- Banner style uses these; Compact style swaps in a 24px bar (VM:ApplyStyle).
 VM.BANNER_HEADER_HEIGHT = 106
 VM.BANNER_ROW_TOP_OFFSET = 108
-VM.COMPACT_HEADER_HEIGHT = 24
-VM.COMPACT_ROW_TOP_OFFSET = 26
+VM.COMPACT_HEADER_HEIGHT = 22
+VM.COMPACT_ROW_TOP_OFFSET = 24
+VM.COMPACT_WIDTH = 260
 VM.HEADER_HEIGHT = VM.BANNER_HEADER_HEIGHT
 VM.ROW_TOP_OFFSET = VM.BANNER_ROW_TOP_OFFSET
 VM.DEFAULT_WIDTH_SCALE = 1.00
@@ -194,7 +195,11 @@ function VM:UpdateModeLabel()
     local frame = VoidMark.MainWindow
     if not frame or not frame.VoidMarkModeText then return end
     local mode = VoidMark.db and VoidMark.db.profile and VoidMark.db.profile.CurrentList or 1
-    frame.VoidMarkModeText:SetText(string.format("|cffb45cff•|r %s (%d)", ModeShort(mode), VM:GetModeCount(mode)))
+    if VM:IsCompact() then
+        frame.VoidMarkModeText:SetText(string.format("|cffc896ff%s|r |cff6ebeff%d|r", ModeShort(mode), VM:GetModeCount(mode)))
+    else
+        frame.VoidMarkModeText:SetText(string.format("|cffb45cff•|r %s (%d)", ModeShort(mode), VM:GetModeCount(mode)))
+    end
 end
 
 function VM:SetListMode(mode)
@@ -614,7 +619,7 @@ function VM:ApplyMainSkin()
         right:SetHeight(14)
         right:SetJustifyH("RIGHT")
         right:SetJustifyV("MIDDLE")
-        right:SetText("DK 0   K/S 0")
+        right:SetText("K/S 0")
         right:SetTextColor(0.88, 0.78, 0.96, 1)
         SetFont(right, "Fonts\\FRIZQT__.TTF", 10, "OUTLINE", GameFontHighlightSmall)
 
@@ -696,7 +701,6 @@ function VM:SetStyle(style)
 end
 
 local HOOD_COORDS = {0.093, 0.210, 0.176, 0.645}
-local WORDMARK_COORDS = {0.254, 0.772, 0.059, 0.527}
 
 function VM:ApplyStyle()
     local f = VoidMark.MainWindow
@@ -726,57 +730,106 @@ function VM:ApplyStyle()
     end
     if f.VoidMarkGeneratedHeader then f.VoidMarkGeneratedHeader:SetShown(not compact) end
 
-    if compact and not f.VoidMarkCompactHood then
-        local art = "Interface\\AddOns\\VoidMarkForever\\Textures\\VoidMarkGeneratedHeader.tga"
+    if compact and not f.vmCompactBuilt then
+        f.vmCompactBuilt = true
         local hood = f:CreateTexture(nil, "ARTWORK")
-        hood:SetTexture(art); hood:SetTexCoord(HOOD_COORDS[1], HOOD_COORDS[2], HOOD_COORDS[3], HOOD_COORDS[4])
-        hood:SetSize(20, 20); hood:SetPoint("TOPLEFT", f, "TOPLEFT", 4, -2)
+        hood:SetTexture("Interface\\AddOns\\VoidMarkForever\\Textures\\VoidMarkGeneratedHeader.tga")
+        hood:SetTexCoord(HOOD_COORDS[1], HOOD_COORDS[2], HOOD_COORDS[3], HOOD_COORDS[4])
+        hood:SetSize(18, 18); hood:SetPoint("TOPLEFT", f, "TOPLEFT", 3, -2)
         f.VoidMarkCompactHood = hood
-        local word = f:CreateTexture(nil, "ARTWORK")
-        word:SetTexture(art); word:SetTexCoord(WORDMARK_COORDS[1], WORDMARK_COORDS[2], WORDMARK_COORDS[3], WORDMARK_COORDS[4])
-        word:SetSize(78, 18); word:SetPoint("LEFT", hood, "RIGHT", 2, 0)
-        f.VoidMarkCompactWordmark = word
+        local bar = f:CreateTexture(nil, "BACKGROUND", nil, 1)
+        bar:SetTexture("Interface\\Buttons\\WHITE8X8")
+        bar:SetVertexColor(0.125, 0.063, 0.21, 1)
+        bar:SetPoint("TOPLEFT", f, "TOPLEFT", 2, -2)
+        bar:SetPoint("BOTTOMRIGHT", f, "TOPRIGHT", -2, -(VM.COMPACT_HEADER_HEIGHT))
+        f.VoidMarkCompactBar = bar
         local line = f:CreateTexture(nil, "ARTWORK")
         line:SetTexture("Interface\\Buttons\\WHITE8X8")
-        line:SetVertexColor(VM.PURPLE[1], VM.PURPLE[2], VM.PURPLE[3], 0.7)
+        line:SetVertexColor(VM.PURPLE[1], VM.PURPLE[2], VM.PURPLE[3], 0.8)
         line:SetHeight(1)
-        line:SetPoint("TOPLEFT", f, "TOPLEFT", 3, -(VM.COMPACT_HEADER_HEIGHT))
-        line:SetPoint("TOPRIGHT", f, "TOPRIGHT", -3, -(VM.COMPACT_HEADER_HEIGHT))
+        line:SetPoint("TOPLEFT", f, "TOPLEFT", 2, -(VM.COMPACT_HEADER_HEIGHT))
+        line:SetPoint("TOPRIGHT", f, "TOPRIGHT", -2, -(VM.COMPACT_HEADER_HEIGHT))
         f.VoidMarkCompactLine = line
+        -- Previous / next list, like the arrows on the banner's list menu.
+        local function arrow(text, step)
+            local b = CreateFrame("Button", nil, f)
+            b:SetSize(12, 15)
+            b.Text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            b.Text:SetAllPoints(b); b.Text:SetText(text); b.Text:SetTextColor(0.82, 0.62, 1.0, 1)
+            b:SetFrameLevel(f:GetFrameLevel() + 25)
+            b:SetScript("OnClick", function()
+                local mode = (VoidMark.db.profile.CurrentList or 1) + step
+                if mode < 1 then mode = 5 elseif mode > 5 then mode = 1 end
+                VM:SetListMode(mode)
+            end)
+            b:SetScript("OnEnter", function(self) self.Text:SetTextColor(1, 1, 1, 1) end)
+            b:SetScript("OnLeave", function(self) self.Text:SetTextColor(0.82, 0.62, 1.0, 1) end)
+            return b
+        end
+        f.VoidMarkNextButton = arrow(">", 1)
+        f.VoidMarkPrevButton = arrow("<", -1)
     end
-    for _, t in ipairs({f.VoidMarkCompactHood, f.VoidMarkCompactWordmark, f.VoidMarkCompactLine}) do
+    for _, t in ipairs({f.VoidMarkCompactHood, f.VoidMarkCompactBar, f.VoidMarkCompactLine, f.VoidMarkNextButton, f.VoidMarkPrevButton}) do
         if t then t:SetShown(compact) end
     end
 
-    -- Buttons along the top: close, gear, GT, then the list/count label.
-    local close, gear, gt, mode = f.CloseButton, f.VoidMarkGearButton, f.VoidMarkGTButton, f.VoidMarkModeButton
+    -- Buttons along the top: close, gear, GT (anchored to each other), arrows, list label.
+    local close, gt, mode = f.CloseButton, f.VoidMarkGTButton, f.VoidMarkModeButton
     if close then
         close:ClearAllPoints()
-        if compact then close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -5) else close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -7, -29) end
+        if compact then close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4) else close:SetPoint("TOPRIGHT", f, "TOPRIGHT", -7, -29) end
+    end
+    if compact and gt and f.VoidMarkNextButton then
+        f.VoidMarkNextButton:ClearAllPoints(); f.VoidMarkNextButton:SetPoint("RIGHT", gt, "LEFT", -4, 0)
+        f.VoidMarkPrevButton:ClearAllPoints(); f.VoidMarkPrevButton:SetPoint("RIGHT", f.VoidMarkNextButton, "LEFT", -1, 0)
     end
     if mode then
         mode:ClearAllPoints()
-        if compact and gt then mode:SetPoint("RIGHT", gt, "LEFT", -6, 0) else mode:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6) end
+        if compact and f.VoidMarkCompactHood then
+            mode:SetPoint("LEFT", f.VoidMarkCompactHood, "RIGHT", 4, 0); mode:SetSize(74, 15)
+            if mode.Text then mode.Text:SetJustifyH("LEFT"); SetFont(mode.Text, "Fonts\\FRIZQT__.TTF", 11, "OUTLINE", GameFontHighlightSmall) end
+        else
+            mode:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6); mode:SetSize(82, 15)
+            if mode.Text then mode.Text:SetJustifyH("RIGHT"); SetFont(mode.Text, "Fonts\\FRIZQT__.TTF", 9, "", GameFontHighlightSmall) end
+        end
     end
 
-    -- Stats: two blocks on the banner's lower edge, or one line after the wordmark.
+    -- Stats: two blocks on the banner's lower edge, or one short line after the list name.
     local left, right = f.VoidMarkGTCompactTextLeft, f.VoidMarkGTCompactTextRight
     if f.VoidMarkGTCompactFrame then
         f.VoidMarkGTCompactFrame:ClearAllPoints()
-        if compact then f.VoidMarkGTCompactFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 108, -5)
+        if compact and mode then f.VoidMarkGTCompactFrame:SetPoint("LEFT", mode, "RIGHT", 2, 0)
         else f.VoidMarkGTCompactFrame:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -67) end
     end
-    if left then left:SetWidth(compact and 74 or 150) end
+    if left then left:SetWidth(compact and 64 or 150) end
     if right then
         right:ClearAllPoints()
-        if compact and left then
-            right:SetPoint("LEFT", left, "RIGHT", 4, 0); right:SetJustifyH("LEFT"); right:SetWidth(70)
-        else
-            right:SetPoint("TOPRIGHT", f, "TOPRIGHT", -12, -67); right:SetJustifyH("RIGHT"); right:SetWidth(112)
-        end
-        -- A narrow compact window has no room for the second block.
-        right:SetShown(not compact or (f:GetWidth() or 0) >= 380)
+        right:SetPoint("TOPRIGHT", f, "TOPRIGHT", -12, -67); right:SetJustifyH("RIGHT"); right:SetWidth(112)
+        right:SetShown(not compact)
     end
+
+    -- Compact is narrow like a slim list; the banner gets its own width back.
+    local p = VoidMark.db.profile
+    local w = f:GetWidth() or VM.DEFAULT_MAIN_WIDTH
+    local target
+    if compact then
+        p.BannerWidth = p.BannerWidth or w
+        if w > VM.COMPACT_WIDTH + 1 then target = VM.COMPACT_WIDTH end
+    elseif not compact and p.BannerWidth then
+        -- Leaving compact: give the banner back the width it had.
+        target = tonumber(p.BannerWidth) or VM.DEFAULT_MAIN_WIDTH
+        p.BannerWidth = nil
+    end
+    if target and VoidMark.RestoreMainWindowPosition and f.GetLeft and f:GetLeft() then
+        local y = p.InvertVoidMark and f:GetBottom() or f:GetTop()
+        VoidMark:RestoreMainWindowPosition(f:GetLeft(), y, target, f:GetHeight())
+        if VoidMark.SaveMainWindowPosition then VoidMark:SaveMainWindowPosition() end
+    elseif target then
+        f:SetWidth(target)
+    end
+    if TaliaaGankTracker and TaliaaGankTracker.RefreshVoidMarkCompact then TaliaaGankTracker:RefreshVoidMarkCompact() end
+    VM:UpdateModeLabel()
+    if VoidMark.RefreshCurrentList then pcall(VoidMark.RefreshCurrentList, VoidMark) end
 
     VM:ReanchorMainRows()
     if VoidMark.ResizeMainWindow then pcall(VoidMark.ResizeMainWindow, VoidMark) end
@@ -914,6 +967,26 @@ function VM:StyleRow(num, name, desc, opacity)
     row.VoidMarkRunBackTime:SetWidth(48)
     row.VoidMarkRunBackTime:SetText(runBackColor .. runBackTime .. "|r")
     row.VoidMarkRunBackTime:SetTextColor(1, 1, 1, opacity or 1)
+
+    -- Compact: class icon before the name; level (gold when above yours) and class
+    -- on the right; the record and KOS word move to the tooltip / skull marker.
+    local compact = VM:IsCompact()
+    row.VoidMarkRecordText:SetShown(not compact)
+    row.VoidMarkClassText:SetShown(not compact)
+    row.VoidMarkThreatText:SetShown(not compact)
+    if compact then
+        row.LeftText:SetText(ClassIconTag(class, 14) .. " " .. marker .. displayName)
+        local lvl = tonumber(data and data.level)
+        local mine = tonumber(VMAPI.UnitLevel and VoidMark:Readable(VMAPI.UnitLevel("player"))) or 0
+        local lvlColor = (lvl and mine > 0 and lvl > mine) and "|cffffcf5a" or "|cffaaaaaa"
+        local className = class and ((LOCALIZED_CLASS_NAMES_MALE and LOCALIZED_CLASS_NAMES_MALE[class]) or (class:sub(1, 1) .. class:sub(2):lower())) or ""
+        row.RightText:ClearAllPoints()
+        row.RightText:SetPoint("RIGHT", row.StatusBar, "RIGHT", -3, 0)
+        row.RightText:SetWidth(84)
+        row.RightText:SetText((lvl and (lvlColor .. lvl .. "|r ") or "") .. className)
+        row.VoidMarkRunBackTime:ClearAllPoints()
+        row.VoidMarkRunBackTime:SetPoint("RIGHT", row.RightText, "LEFT", -4, 0)
+    end
 
     if row.VoidMarkRunBackLabel then
         row.VoidMarkRunBackLabel:SetText("")

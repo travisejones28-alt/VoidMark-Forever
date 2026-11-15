@@ -1804,8 +1804,12 @@ function GT:RefreshVoidMarkCompact()
     local leftText = "K " .. tostring(kills)
         .. "   U " .. tostring(unique)
         .. "   R " .. tostring(repeats)
-    local rightText = "DK " .. tostring(dhkToday)
-        .. "   K/S " .. tostring(streak)
+    -- No dishonorable kills on Forever, so only the kill streak goes on the right.
+    local rightText = "K/S " .. tostring(streak)
+    if VoidMark.VoidMark and VoidMark.VoidMark.IsCompact and VoidMark.VoidMark:IsCompact() then
+        if left then left:SetText("K " .. tostring(kills) .. "  K/S " .. tostring(streak)) end
+        return
+    end
 
     if left then
         left:SetText(leftText)
