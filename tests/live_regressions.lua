@@ -210,7 +210,9 @@ do
     local cv={nameplateMaxDistance='20',UnitNameNPC='1'};local oGet,oSet=GetCVar,SetCVar
     GetCVar=function(k) return cv[k] end;SetCVar=function(k,v) cv[k]=(k=='nameplateMaxDistance' and tonumber(v)>41) and '41' or v end
     assert(NC.SetDistance(41)==41 and cv.nameplateMaxDistance=='41','range 41')
+    cv.UnitNameEnemyPlayerName='0'
     NC.SetFloatingNamesHidden(true);assert(NC.FloatingNamesHidden() and cv.UnitNameNPC=='0','far names hidden')
+    assert(cv.UnitNameEnemyPlayerName=='1' and cv.UnitNameEnemyPetName=='0','far names: players only')
     NC.SetFloatingNamesHidden(false);assert(cv.UnitNameNPC=='1')
     GetCVar,SetCVar=oGet,oSet
     VoidMark.db.profile.NameplateColors=nil;NC.ToggleWindow();assert(not NC.window:IsShown())

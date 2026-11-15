@@ -187,9 +187,14 @@ function NC.SetDistance(yards)
     return NC.Distance()
 end
 function NC.FloatingNamesHidden() return cvar("UnitNameNPC") == "0" end
+-- "Far-away names = players only": hide floating names for NPCs and enemy
+-- pets/guardians/totems, keep them for enemy players. A far name you can
+-- see is then always a player; NPCs show once they get a nameplate.
+local NPC_NAMES = { "UnitNameNPC", "UnitNameHostleNPC", "UnitNameEnemyNPC", "UnitNameEnemyPetName", "UnitNameEnemyGuardianName", "UnitNameEnemyTotemName" }
 function NC.SetFloatingNamesHidden(hide)
     local v = hide and "0" or "1"
-    for _, n in ipairs({ "UnitNameNPC", "UnitNameHostleNPC", "UnitNameEnemyNPC" }) do setCVar(n, v) end
+    for _, n in ipairs(NPC_NAMES) do setCVar(n, v) end
+    if hide then setCVar("UnitNameEnemyPlayerName", "1") end
 end
 
 function NC.UpdateWindow()
@@ -261,7 +266,7 @@ function NC.ToggleWindow()
         hide:SetPoint("TOPLEFT", 12, -176); hide:SetSize(24, 24)
         local hl = w:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         hl:SetPoint("LEFT", hide, "RIGHT", 4, 0); hl:SetWidth(250); hl:SetJustifyH("LEFT")
-        hl:SetText("Hide far-away NPC names (the red text with no nameplate - the game won't let addons recolor it)")
+        hl:SetText("Far-away names: players only. Hides the floating names of NPCs and pets, so any far name you see is a player.")
         hl:SetWordWrap(true)
         hide:SetScript("OnClick", function(b) NC.SetFloatingNamesHidden(b:GetChecked() and true or false); NC.UpdateWindow() end)
         w.hideNames = hide
