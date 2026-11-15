@@ -190,6 +190,12 @@ do
     -- combat hides the GUID: still red (remembered)
     UnitGUID=function() return SECRET end;UnitIsPlayer=function() return SECRET end
     p1.healthBar.c=nil;NC.Paint(p1);assert(p1.healthBar.c and p1.healthBar.c[1]>0.8,'remembered in combat')
+    -- Dropdown picks: purple players, game color for NPCs.
+    VoidMark.db.profile.NameplatePlayerColor='purple';VoidMark.db.profile.NameplateNpcColor='game'
+    p1.healthBar.c=nil;NC.Paint(p1);assert(p1.healthBar.c[1]==0.64 and p1.healthBar.c[3]==1.00,'purple players')
+    p2.healthBar.c=nil;NC.Paint(p2);assert(not p2.healthBar.c,'NPCs: game default')
+    assert(NC.Choices().purple=='Purple' and #NC.ORDER==11,'dropdown choices')
+    VoidMark.db.profile.NameplatePlayerColor=nil;VoidMark.db.profile.NameplateNpcColor=nil
     VoidMark.db.profile.NameplateColors=false
     p2.healthBar.c=nil;NC.Paint(p2);assert(not p2.healthBar.c,'off: game colors')
     VoidMark.db.profile.NameplateColors=nil

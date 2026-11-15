@@ -1,12 +1,42 @@
--- Nameplate colors: enemy players red, NPCs blue (Settings > General).
+-- Nameplate colors: enemy players red, NPCs blue by default; both colors
+-- are picked from dropdowns in Settings > General.
 -- Tapped mobs stay gray and friendly players keep the game's color.
 -- Forever can hide unit facts in combat, so what a plate is (player or NPC,
 -- hostile or not) is worked out when the plate appears and remembered.
 local NC = {}
 VoidMarkNameplateColors = NC
 
-NC.PLAYER = { 0.90, 0.12, 0.12 }
-NC.NPC = { 0.20, 0.45, 1.00 }
+-- Choices for the two dropdowns in Settings > General. "game" leaves the
+-- game's own color.
+NC.COLORS = {
+    red    = { name = "Red",    rgb = { 0.90, 0.12, 0.12 } },
+    blue   = { name = "Blue",   rgb = { 0.20, 0.45, 1.00 } },
+    purple = { name = "Purple", rgb = { 0.64, 0.30, 1.00 } },
+    pink   = { name = "Pink",   rgb = { 1.00, 0.40, 0.75 } },
+    orange = { name = "Orange", rgb = { 1.00, 0.55, 0.10 } },
+    yellow = { name = "Yellow", rgb = { 1.00, 0.85, 0.10 } },
+    green  = { name = "Green",  rgb = { 0.20, 0.85, 0.30 } },
+    cyan   = { name = "Cyan",   rgb = { 0.15, 0.85, 0.95 } },
+    white  = { name = "White",  rgb = { 0.95, 0.95, 0.95 } },
+    black  = { name = "Black",  rgb = { 0.12, 0.12, 0.12 } },
+    game   = { name = "Game default" },
+}
+NC.ORDER = { "red", "blue", "purple", "pink", "orange", "yellow", "green", "cyan", "white", "black", "game" }
+NC.DEFAULT_PLAYER, NC.DEFAULT_NPC = "red", "blue"
+
+function NC.Choices()
+    local t = {}
+    for _, k in ipairs(NC.ORDER) do t[k] = NC.COLORS[k].name end
+    return t
+end
+local function profile() return VoidMark and VoidMark.db and VoidMark.db.profile end
+function NC.ColorFor(kind)
+    local p = profile()
+    local key = kind == "enemyPlayer" and (p and p.NameplatePlayerColor or NC.DEFAULT_PLAYER)
+        or (p and p.NameplateNpcColor or NC.DEFAULT_NPC)
+    local c = NC.COLORS[key] or NC.COLORS[kind == "enemyPlayer" and NC.DEFAULT_PLAYER or NC.DEFAULT_NPC]
+    return c.rgb
+end
 
 local kinds = {}   -- nameplate unit -> "enemyPlayer" | "npc" | "other"
 
@@ -54,8 +84,8 @@ function NC.Paint(frame)
     local kind = kinds[unit]
     if not kind then kind = NC.Kind(unit); kinds[unit] = kind end
     local c
-    if kind == "enemyPlayer" then c = NC.PLAYER
-    elseif kind == "npc" and not safe(UnitIsTapDenied, unit) then c = NC.NPC end
+    if kind == "enemyPlayer" then c = NC.ColorFor("enemyPlayer")
+    elseif kind == "npc" and not safe(UnitIsTapDenied, unit) then c = NC.ColorFor("npc") end
     if c then bar:SetStatusBarColor(c[1], c[2], c[3]) end
 end
 

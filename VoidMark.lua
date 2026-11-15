@@ -177,14 +177,40 @@ VoidMark.options = {
 					},
 				},
 				NameplateColors = {
-					name = "Nameplate colors: enemy players red, NPCs blue",
-					desc = "Color enemy player nameplates red and NPC nameplates blue so players stand out. Tapped mobs stay gray.",
+					name = "Color nameplates (enemy players and NPCs)",
+					desc = "Color enemy player and NPC nameplates with the colors picked below so players stand out. Tapped mobs stay gray.",
 					type = "toggle",
 					order = 7.5,
 					width = "full",
 					get = function(info) return VoidMark.db.profile.NameplateColors ~= false end,
 					set = function(info, value)
 						VoidMark.db.profile.NameplateColors = value
+						if VoidMarkNameplateColors then VoidMarkNameplateColors.RefreshAll() end
+					end,
+				},
+				NameplatePlayerColor = {
+					name = "Enemy player color",
+					type = "select",
+					order = 7.6,
+					values = function() return VoidMarkNameplateColors and VoidMarkNameplateColors.Choices() or {} end,
+					sorting = function() return VoidMarkNameplateColors and VoidMarkNameplateColors.ORDER end,
+					disabled = function() return VoidMark.db.profile.NameplateColors == false end,
+					get = function(info) return VoidMark.db.profile.NameplatePlayerColor or "red" end,
+					set = function(info, value)
+						VoidMark.db.profile.NameplatePlayerColor = value
+						if VoidMarkNameplateColors then VoidMarkNameplateColors.RefreshAll() end
+					end,
+				},
+				NameplateNpcColor = {
+					name = "NPC color",
+					type = "select",
+					order = 7.7,
+					values = function() return VoidMarkNameplateColors and VoidMarkNameplateColors.Choices() or {} end,
+					sorting = function() return VoidMarkNameplateColors and VoidMarkNameplateColors.ORDER end,
+					disabled = function() return VoidMark.db.profile.NameplateColors == false end,
+					get = function(info) return VoidMark.db.profile.NameplateNpcColor or "blue" end,
+					set = function(info, value)
+						VoidMark.db.profile.NameplateNpcColor = value
 						if VoidMarkNameplateColors then VoidMarkNameplateColors.RefreshAll() end
 					end,
 				},
