@@ -787,9 +787,12 @@ function VM:ApplyStyle()
         mode:ClearAllPoints()
         if compact and f.VoidMarkCompactHood then
             mode:SetPoint("LEFT", f.VoidMarkCompactHood, "RIGHT", 4, 0); mode:SetSize(74, 15)
+            -- No dark box behind the list name on the slim bar.
+            if mode.SetBackdropColor then mode:SetBackdropColor(0, 0, 0, 0) end
             if mode.Text then mode.Text:SetJustifyH("LEFT"); SetFont(mode.Text, "Fonts\\FRIZQT__.TTF", 11, "OUTLINE", GameFontHighlightSmall) end
         else
             mode:SetPoint("TOPRIGHT", f, "TOPRIGHT", -6, -6); mode:SetSize(82, 15)
+            if mode.SetBackdropColor then mode:SetBackdropColor(0.01, 0.005, 0.02, 0.72) end
             if mode.Text then mode.Text:SetJustifyH("RIGHT"); SetFont(mode.Text, "Fonts\\FRIZQT__.TTF", 9, "", GameFontHighlightSmall) end
         end
     end
