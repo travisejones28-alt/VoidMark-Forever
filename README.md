@@ -1,5 +1,13 @@
 # VoidMark
 
+## Forever 1.2.29: Help & Commands
+
+**Options > AddOns > VoidMark > Help & Commands** (or `/vm help`) shows a short FAQ
+and every command: `/vm` (read live from VoidMark's command list) and each module's
+(`/tgank`, `/trb`, `/emoves`, `/vmkos`, `/tb`, `/trd`, `/ttaunt`, `/ts`, `/ty`, `/vmc`,
+`/tthreat`, `/vmminimap`, `/vmf`). The window has a search box. `tests/validate.py`
+fails if a module command is handled but missing from the help.
+
 ## Forever live 1.2.0
 
 Ports the current Classic Era changes through `13ad157` (November 3) into the

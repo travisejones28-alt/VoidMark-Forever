@@ -79,6 +79,35 @@ Drain()
 LUA.execute((Path(__file__).parent/'regressions.lua').read_text())
 LUA.execute((Path(__file__).parent/'feature_regressions.lua').read_text())
 LUA.execute((Path(__file__).parent/'live_regressions.lua').read_text())
+LUA.execute((Path(__file__).parent/'help_regressions.lua').read_text())
+# Help lists every subcommand each module's slash handler accepts.
+import re
+help_text=(ROOT/'Help.lua').read_text()
+listed={}
+for entry in re.findall(r"\{'(/\w+[^']*)'",help_text):
+    cmd=entry.split()[0]
+    listed.setdefault(cmd,set()).update(re.findall(r'[\w-]+',entry))
+    for alias in re.findall(r'(/\w+)',entry): listed.setdefault(alias,set()).update(re.findall(r'[\w-]+',entry))
+for line in (ROOT/'VoidMarkForever.toc').read_text().splitlines():
+    line=line.strip().replace('\\','/')
+    if not line.endswith('.lua') or line=='Help.lua': continue
+    source=(ROOT/line).read_text(errors='ignore')
+    for m in re.finditer(r'SLASH_(\w+?)1 *= *["\']([^"\']+)["\']',source):
+        name,cmd=m.group(1),m.group(2)
+        assert cmd in listed, f'Help.lua does not list {cmd} ({line})'
+        h=re.search(r'^([ \t]*)SlashCmdList(?:\.|\[["\'])'+name+r'["\']?\]? *= *function',source,re.M)
+        if not h: continue
+        indent=h.group(1); body=[]
+        for l in source[h.end():].split('\n')[1:]:
+            if l.startswith(indent+'end') and not l[len(indent):len(indent)+1].isspace(): break
+            body.append(l)
+        words=set()
+        for w in re.findall(r'\b(?:cmd|msg|lower|command|arg|rest) *== *"([^"]+)"','\n'.join(body)): words.update(re.findall(r'[\w-]+',w))
+        checked=globals().setdefault('checked',{}); checked[cmd]=len(words)
+        missing=sorted(w for w in words if w not in listed[cmd] and w not in ('help','faq','commands'))
+        assert not missing, f'Help.lua is missing {cmd} {missing}'
+assert checked.get('/tgank',0)>=30 and checked.get('/tb',0)>=20, checked
+print('PASS: Help lists every module slash command ('+str(sum(checked.values()))+' subcommands)')
 # Audio settings and cancellation run in isolation, using the real module.
 audio=LuaRuntime(unpack_returned_tuples=True)
 audio.execute((Path(__file__).parent/'kill_effects_regression.lua').read_text())

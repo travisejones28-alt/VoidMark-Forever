@@ -1509,6 +1509,7 @@ function VoidMark:SetupOptions()
 	AddOptionsFrame("DisplayOptions", "VoidMark", L["DisplayOptions"], L["VoidMark Option"], "DisplayOptions")
 	AddOptionsFrame("AlertOptions", "VoidMark", L["AlertOptions"], L["VoidMark Option"], "AlertOptions")
 	AddOptionsFrame("TrackingOptions", "VoidMark", "Tracking", L["VoidMark Option"], "TrackingOptions")
+	if VoidMark.options.args.Help then AddOptionsFrame("Help", "VoidMark", "Help & Commands", L["VoidMark Option"], "Help") end
 
 	self:RegisterModuleOptions("Profiles", LibStub("AceDBOptions-3.0"):GetOptionsTable(self.db), L["Profiles"])
 	VoidMark.options.args.Profiles.order = -2
