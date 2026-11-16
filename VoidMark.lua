@@ -322,6 +322,15 @@ VoidMark.options = {
 					order = 1.5,
 					func = function() if VoidMarkEnemyMoves then VoidMarkEnemyMoves:ToggleOptions() end end,
 				},
+				FightMapEnabled = {
+					name = "Show fight skulls on world map",
+					desc = "Green/blue/red skulls where you killed or died to enemy players. Fights are still recorded while this is off.",
+					type = "toggle",
+					order = 1.75,
+					width = "full",
+					get = function() return not VoidMarkFightMap or VoidMarkFightMap:IsEnabled() end,
+					set = function(_, v) if VoidMarkFightMap then VoidMarkFightMap:SetEnabled(v) end end,
+				},
 				DisplayHeader = {
 					name = "VoidMark window",
 					type = "header",

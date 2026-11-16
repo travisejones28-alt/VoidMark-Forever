@@ -43,6 +43,22 @@ function FM:SetPeriod(p)
     FM:Refresh()
 end
 
+-- On/off for the whole fight map (skulls and the map dropdown). Fights are still
+-- recorded while it's off, so turning it back on shows the full history.
+function FM:IsEnabled()
+    local prof = VoidMark and VoidMark.db and VoidMark.db.profile
+    return not (prof and prof.FightMapEnabled == false)
+end
+function FM:SetEnabled(on)
+    local prof = VoidMark and VoidMark.db and VoidMark.db.profile
+    if prof then prof.FightMapEnabled = on and true or false end
+    if FM.dropdown then
+        if FM:IsEnabled() then FM.dropdown:Show() else FM.dropdown:Hide() end
+    end
+    FM:Refresh()
+end
+function FM:ToggleEnabled() FM:SetEnabled(not FM:IsEnabled()) end
+
 -- Our map and position, or nil in an instance or when the client hides them.
 function FM:Position()
     if not C_Map or not C_Map.GetBestMapForUnit or not C_Map.GetPlayerMapPosition then return nil end
@@ -73,7 +89,7 @@ end
 function FM:Visible(mapID, now)
     local out = {}
     local period = FM:Period()
-    if period == "off" or type(mapID) ~= "number" then return out end
+    if not FM:IsEnabled() or period == "off" or type(mapID) ~= "number" then return out end
     local since = (now or time()) - FM.PERIODS[period]
     for _, f in ipairs(FM:Store() or {}) do
         if f.m == mapID and (f.t or 0) >= since then out[#out + 1] = f end
@@ -160,6 +176,7 @@ function FM:SetupMap()
     end
     if UIDropDownMenu_SetText then UIDropDownMenu_SetText(dd, label()) end
     FM.dropdown = dd
+    if not FM:IsEnabled() then dd:Hide() end
 end
 
 local loader = CreateFrame("Frame")

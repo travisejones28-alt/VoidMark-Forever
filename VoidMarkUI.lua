@@ -295,6 +295,13 @@ local function BuildGearMenu(self, level)
         VoidMarkDB.VoidMarkKOSWho = VoidMarkDB.VoidMarkKOSWho or {}
         VoidMarkDB.VoidMarkKOSWho.enabled = not (VoidMarkDB.VoidMarkKOSWho.enabled ~= false)
     end)
+    local fightMapEnabled = not (VoidMarkFightMap and VoidMarkFightMap.IsEnabled)
+        or VoidMarkFightMap:IsEnabled()
+    Add(fightMapEnabled and "Fight Map Skulls: ON" or "Fight Map Skulls: OFF", function()
+        if VoidMarkFightMap and VoidMarkFightMap.ToggleEnabled then
+            VoidMarkFightMap:ToggleEnabled()
+        end
+    end)
     Add("Nameplate Colors", function()
         if VoidMarkNameplateColors and VoidMarkNameplateColors.ToggleWindow then VoidMarkNameplateColors.ToggleWindow() end
     end)

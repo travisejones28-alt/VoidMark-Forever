@@ -281,6 +281,11 @@ do
     VoidMark.db.profile.FightMapPeriod='all';assert(#fm:Visible(1431)==2)
     VoidMark.db.profile.FightMapPeriod='off';assert(#fm:Visible(1431)==0)
     VoidMark.db.profile.FightMapPeriod=nil
+    VoidMark.db.profile.FightMapPeriod='all';fm:SetEnabled(false)
+    assert(not fm:IsEnabled() and #fm:Visible(1431)==0,'fight map shown while turned off')
+    fm:Add('W','Enemy-One');assert(#fights==3,'fight not recorded while map off');table.remove(fights)
+    fm:ToggleEnabled();assert(fm:IsEnabled() and #fm:Visible(1431)==2,'fight map not back on')
+    VoidMark.db.profile.FightMapPeriod=nil;VoidMark.db.profile.FightMapEnabled=nil
     C_Map.GetPlayerMapPosition=nil;fm:Add('W','Enemy-One');assert(#fights==2,'fight added without a position')
     C_Map.GetPlayerMapPosition=oPos
     VoidMarkPerCharDB.Fights={}
